@@ -6,7 +6,7 @@ D²IC (A differentiable framework for full-field kinematic identification) is a 
 - **Accelerated pixelwise DIC**: Gauss–Newton/CG written in `jax.numpy`, auto-differentiated gradients, identical CPU/GPU execution.
 - **Native JAX preprocessing**: node neighborhoods, pixel→element mapping, and node→pixel CSR structures can run entirely in JAX (`use_jax_precompute=True`) to keep data on device.
 - **Robust initialization**: ORB/SIFT detection, RANSAC filters, sparse matching strategies tuned for large motions.
-- **Reproducible scripts**: step-by-step tutorials (`doc/03_tutorial_platehole_sequence_step_by_step.py`, `doc/04_tutorial_buterFly_sequence_step_by_step.py`) that export meshes, figures, and field summaries automatically.
+- **Reproducible scripts**: step-by-step tutorials (see `doc/` directory) that export meshes, figures, and field summaries automatically.
 
 
 ## Repository layout
@@ -16,7 +16,7 @@ D²IC (A differentiable framework for full-field kinematic identification) is a 
 
 ## Installation
 ```bash
-git clone https://github.com/<your-account>/D2IC.git
+git clone https://github.com/EmileRouxSMB/D2IC.git
 cd D2IC
 python -m venv .venv
 source .venv/bin/activate  # on Windows: .\.venv\Scripts\activate
@@ -33,7 +33,7 @@ pip install "jax[cuda12]"
 See the [official docs](https://jax.readthedocs.io/en/latest/installation.html) for other CUDA/cuDNN pairs.
 
 ### System dependencies (meshing)
-ROI generation scripts rely on `meshio`/`gmsh`. On Debian/Ubuntu:
+ROI generation scripts rely on `meshio`/`gmsh`. On Debian/Ubuntu systems, install the following packages:
 ```bash
 sudo apt-get install -y gmsh libglu1 libxcursor-dev libxft2 libxinerama1 libfltk1.3-dev libfreetype6-dev libgl1-mesa-dev
 ```
@@ -68,6 +68,7 @@ Both tutorials rely on `D2IC.app_utils.run_pipeline_sequence`, which performs:
 5. the global DIC loop `run_dic_sequence` (CG + Laplace/Spring regularization),
 6. post-processing and exports via `DICPlotter`.
 
+
 ## Programmatic usage
 ```python
 import jax.numpy as jnp
@@ -91,10 +92,7 @@ disp_opt, history = dic.run_dic(
 )
 F_nodes, E_nodes = dic.compute_green_lagrange_strain_nodes(disp_opt, k_ring=2, gauge_length=200.0)
 ```
-Highlights:
-- `history` stores `(J, ||grad||)` at each CG iteration.
-- `run_dic_nodal` offers Jacobi or Gauss–Seidel-like local refinement sweeps.
-- `compute_pixel_state` and `gauss_seidel_nodal_step_*` are JIT-friendly so you can assemble custom solvers.
+
 
 
 
