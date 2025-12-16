@@ -1,9 +1,2 @@
-opencv-python
-matplotlib
 ipython
-numpy
-scikit-image
-jax
-dm_pix
-meshio
-gmsh
+imagecodecs
