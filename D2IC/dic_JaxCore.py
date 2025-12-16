@@ -11,16 +11,17 @@ from  dm_pix import flat_nd_linear_interpolate
 
 def build_node_neighbor_dense(elements, nodes_coord, n_nodes):
     """
-    elements    : (Ne,4) connectivité quad (numpy array int)
-    nodes_coord : (Nnodes,2) coordonnées nodales (numpy)
-    n_nodes     : nombre total de noeuds
+    elements    : (Ne,4) quadrilateral connectivity (numpy int array)
+    nodes_coord : (Nnodes,2) nodal coordinates (numpy)
+    n_nodes     : total number of nodes
 
-    Retourne :
-      node_neighbor_index  : (n_nodes, max_deg) int32   -- indices des voisins
-      node_neighbor_degree : (n_nodes,) int32           -- nb de voisins
-      node_neighbor_weight : (n_nodes, max_deg) float32 -- poids 'mécaniques' w_ij
+    Returns
+    -------
+      node_neighbor_index  : (n_nodes, max_deg) int32   -- neighbor indices
+      node_neighbor_degree : (n_nodes,) int32           -- neighbor counts
+      node_neighbor_weight : (n_nodes, max_deg) float32 -- mechanical-like weights w_ij
     """
-    # 1) construire les ensembles de voisins
+    # 1) build neighbor sets
     neigh_sets = [set() for _ in range(n_nodes)]
     for elt in elements:
         elt = np.asarray(elt, dtype=int)
@@ -39,7 +40,7 @@ def build_node_neighbor_dense(elements, nodes_coord, n_nodes):
     node_neighbor_degree = np.asarray(degrees, dtype=np.int32)
     node_neighbor_weight = np.zeros((n_nodes, max_deg), dtype=np.float32)
 
-    # 2) remplir les arrays denses + poids w_ij ~ 1 / ||x_i - x_j||
+    # 2) fill dense arrays + weights w_ij ~ 1 / ||x_i - x_j||
     for i in range(n_nodes):
         if degrees[i] == 0:
             continue
@@ -49,7 +50,7 @@ def build_node_neighbor_dense(elements, nodes_coord, n_nodes):
         xi = nodes_coord[i, :2]  # (2,)
         xj = nodes_coord[neigh_i, :2]  # (deg_i,2)
         dist = np.linalg.norm(xj - xi[None, :], axis=1)
-        # petit epsilon pour éviter division par 0
+        # small epsilon to avoid dividing by zero
         w = 1.0 / (dist + 1e-6)
         node_neighbor_weight[i, :degrees[i]] = w.astype(np.float32)
 
@@ -58,29 +59,29 @@ def build_node_neighbor_dense(elements, nodes_coord, n_nodes):
 
 def build_k_ring_neighbors(node_neighbor_index, node_neighbor_degree, k=2):
     """
-    Construit un voisinage 'k-anneaux' à partir du premier anneau dense.
+    Build a k-ring neighborhood from the dense first-ring adjacency.
 
     Parameters
     ----------
     node_neighbor_index : (Nnodes, max_deg) int32
-        Indices du 1er anneau (issu de build_node_neighbor_dense).
+        Indices of the first ring (as returned by ``build_node_neighbor_dense``).
     node_neighbor_degree : (Nnodes,) int32
-        Nombre de voisins du 1er anneau par nœud.
+        Number of neighbors in the first ring for each node.
     k : int, optional
-        Nombre d'anneaux souhaité (k=1 : inchangé, k=2 : voisins des voisins, ...).
+        Number of rings to include (k=1 unchanged, k=2 adds neighbors of neighbors, ...).
 
     Returns
     -------
     neigh_index_k : (Nnodes, max_deg_k) int32
-        Indices des voisins jusqu'au kᵉ anneau (triés, sans doublons).
+        Sorted neighbor indices up to the k-th ring (duplicates removed).
     neigh_degree_k : (Nnodes,) int32
-        Degré effectif pour chaque nœud.
+        Effective neighbor degree for each node.
     """
     node_neighbor_index = np.asarray(node_neighbor_index)
     node_neighbor_degree = np.asarray(node_neighbor_degree)
     Nnodes, _ = node_neighbor_index.shape
 
-    # Ensembles uniques pour éviter les doublons.
+    # Unique sets to avoid duplicates.
     neigh_sets = [set() for _ in range(Nnodes)]
     for i in range(Nnodes):
         deg_i = int(node_neighbor_degree[i])
@@ -88,7 +89,7 @@ def build_k_ring_neighbors(node_neighbor_index, node_neighbor_degree, k=2):
             j = int(node_neighbor_index[i, d])
             neigh_sets[i].add(j)
 
-    # Propagation sur k-1 anneaux supplémentaires.
+    # Propagate over k-1 additional rings.
     for _ in range(max(0, k - 1)):
         new_sets = [set(s) for s in neigh_sets]
         for i in range(Nnodes):
@@ -116,19 +117,20 @@ def build_k_ring_neighbors(node_neighbor_index, node_neighbor_degree, k=2):
 
 def build_pixel_to_element_mapping_numpy(pixel_coords, nodes_coord, elements):
     """
-    pixel_coords : (Np,2) float64 ou float32
+    pixel_coords : (Np,2) float64 or float32
     nodes_coord  : (Nn,2)
-    elements     : (Ne,4) indices des noeuds (numpy int)
+    elements     : (Ne,4) node indices (numpy int)
 
-    Retourne:
-      pixel_elts  : (Np,) index d'élément
-      pixel_nodes : (Np,4) indices des 4 noeuds
+    Returns
+    -------
+      pixel_elts  : (Np,) element indices
+      pixel_nodes : (Np,4) indices of the four local nodes
     """
     Np = pixel_coords.shape[0]
     pixel_elts = -np.ones(Np, dtype=int)
     pixel_nodes = np.zeros((Np, 4), dtype=int)
 
-    # Prépare Path + bounding box par élément
+    # Prepare Path + bounding box per element
     elt_paths = []
     elt_bboxes = []
     for e in elements:
@@ -140,9 +142,9 @@ def build_pixel_to_element_mapping_numpy(pixel_coords, nodes_coord, elements):
         elt_bboxes.append([xmin, xmax, ymin, ymax])
     elt_bboxes = np.asarray(elt_bboxes)
 
-    # Vectorisé : itère par élément (rare) plutôt que par pixel (souvent)
+    # Vectorized: iterate per element (rare) instead of per pixel (frequent)
     for e, path in enumerate(elt_paths):
-        # Pixels encore non affectés + dans la bbox de l'élément
+        # Remaining pixels inside the element bounding box
         mask_bbox = (
             (pixel_elts < 0)
             & (pixel_coords[:, 0] >= elt_bboxes[e, 0])
@@ -161,7 +163,7 @@ def build_pixel_to_element_mapping_numpy(pixel_coords, nodes_coord, elements):
         pixel_elts[idx] = e
         pixel_nodes[idx] = elements[e]
 
-        # early exit si tout est rempli
+        # early exit when everything is assigned
         if np.all(pixel_elts >= 0):
             break
 
@@ -169,11 +171,11 @@ def build_pixel_to_element_mapping_numpy(pixel_coords, nodes_coord, elements):
 
 
 # ------------------------
-# Fonctions de forme Q4
+# Q4 shape functions
 # ------------------------
 
 def shape_functions_jax(xi, eta):
-    """Fonctions de forme Q4 bilinéaires sur [0,1]^2."""
+    """Bilinear Q4 shape functions on [0, 1]^2."""
     N1 = (1.0 - xi) * (1.0 - eta)
     N2 = xi * (1.0 - eta)
     N3 = xi * eta
@@ -202,7 +204,7 @@ def dN_deta_jax(xi, eta):
 def map_quad_jax(xi_eta, Xe):
     """
     Xi_eta : (2,) = (xi, eta)
-    Xe     : (4,2) coord. des noeuds de l'élément
+    Xe     : (4,2) coordinates of the element nodes
     """
     xi, eta = xi_eta
     N = shape_functions_jax(xi, eta)  # (4,)
@@ -229,11 +231,11 @@ def jacobian_quad_jax(xi_eta, Xe):
 
 def _newton_one_pixel(xp, Xe, max_iter=20):
     """
-    xp : (2,) coord pixel
-    Xe : (4,2) coord noeuds element
-    Newton 2D pour inverser le mapping Q4.
-    Pas de test de tolérance pour garder le corps JIT-compatible :
-    on fait `max_iter` itérations fixes.
+    xp : (2,) pixel coordinates
+    Xe : (4,2) element node coordinates
+    2D Newton method to invert the Q4 mapping.
+    No tolerance test to keep the body JIT-compatible: run a fixed number of
+    ``max_iter`` iterations.
     """
     def body_fun(i, xi_eta):
         x_map = map_quad_jax(xi_eta, Xe)
@@ -244,14 +246,14 @@ def _newton_one_pixel(xp, Xe, max_iter=20):
 
     xi_eta0 = jnp.array([0.5, 0.5])
     xi_eta = lax.fori_loop(0, max_iter, body_fun, xi_eta0)
-    xi_eta = jnp.clip(xi_eta, 0.0, 1.0)  # sécurité
+    xi_eta = jnp.clip(xi_eta, 0.0, 1.0)  # safety
     return xi_eta  # (2,)
 
 
-# Vectorization Newton sur tous les pixels
+# Vectorized Newton on all pixels
 vmap_newton = jax.jit(
     vmap(_newton_one_pixel, in_axes=(0, 0)),
-    static_argnames=()  # max_iter est codé en dur ici
+    static_argnames=()  # max_iter is hard-coded here
 )
 
 
@@ -264,20 +266,21 @@ def compute_pixel_shape_functions_jax(pixel_coords,
     pixel_nodes  : (Np,4) int32 jax
     nodes_coord  : (Nn,2) jax
 
-    Retourne:
-      pixel_N     : (Np,4) valeurs Ni(ξp,ηp)
-      xi_eta_all  : (Np,2) coordonnées locales (xi,eta)
+    Returns
+    -------
+      pixel_N     : (Np,4) values Ni(ξp,ηp)
+      xi_eta_all  : (Np,2) local coordinates (xi, eta)
     """
-    # Coord des 4 noeuds pour chaque pixel (Np,4,2)
-    Xe_all = nodes_coord[pixel_nodes]  # indexation avancée JAX OK
+    # Coordinates of the 4 nodes for each pixel (Np,4,2)
+    Xe_all = nodes_coord[pixel_nodes]  # advanced JAX indexing OK
 
-    # Inversion (vectorisée) : (Np,2)
+    # Vectorized inversion: (Np,2)
     xi_eta_all = vmap_newton(pixel_coords, Xe_all)
 
     xi = xi_eta_all[:, 0]
     eta = xi_eta_all[:, 1]
 
-    # Fonctions de forme (vectorisé sur les pixels)
+    # Shape functions (vectorized over pixels)
     def _shape_from_xieta(xi, eta):
         return shape_functions_jax(xi, eta)
 
@@ -306,7 +309,7 @@ def residuals_pixelwise_core(displacement,
     # (Np,4,1)
     shapeN = pixel_shapeN[..., None]
 
-    # déplacements nodaux des 4 nœuds par pixel
+    # nodal displacements of the 4 nodes per pixel
     disp_local = disp[pixel_nodes]          # (Np,4,2)
 
     # u(x_p) = Σ_i N_i * u_i
@@ -315,7 +318,7 @@ def residuals_pixelwise_core(displacement,
     x_ref = pixel_coords                    # (Np,2)
     x_def = x_ref + u_pix                   # (Np,2)
 
-    # interpolation images (note : im.T comme dans ton code existant)
+    # image interpolation (note: im.T just like in the existing code)
     I1 = flat_nd_linear_interpolate(im1.T, x_ref.T)  # (Np,)
     I2 = flat_nd_linear_interpolate(im2.T, x_def.T)  # (Np,)
 
@@ -338,18 +341,19 @@ def J_pixelwise_core(displacement,
 
 def build_node_pixel_dense(pixel_nodes, pixel_shapeN, n_nodes):
     """
-    pixel_nodes : (Np,4) int  -- indices des 4 noeuds de chaque pixel
-    pixel_shapeN : (Np,4) float -- Ni(p) pour les 4 noeuds
-    n_nodes : nombre total de noeuds
+    pixel_nodes : (Np,4) int  -- indices of the 4 nodes of each pixel
+    pixel_shapeN : (Np,4) float -- Ni(p) for the 4 nodes
+    n_nodes : total number of nodes
 
-    Retourne :
-      node_pixel_index : (n_nodes, max_deg) int32   -- indices de pixels
+    Returns
+    -------
+      node_pixel_index : (n_nodes, max_deg) int32   -- pixel indices
       node_N_weight    : (n_nodes, max_deg) float32 -- Ni(p)
-      node_degree      : (n_nodes,) int32           -- nb de pixels utiles
+      node_degree      : (n_nodes,) int32           -- number of useful pixels
     """
     Np = pixel_nodes.shape[0]
 
-    # 1) construire des listes par nœud
+    # 1) build lists per node
     per_node_pixels = [[] for _ in range(n_nodes)]
     per_node_weights = [[] for _ in range(n_nodes)]
 
@@ -360,11 +364,11 @@ def build_node_pixel_dense(pixel_nodes, pixel_shapeN, n_nodes):
             per_node_pixels[i].append(p)
             per_node_weights[i].append(Ni)
 
-    # 2) trouver le max de voisins
+    # 2) find the maximum number of neighbors
     degrees = [len(lst) for lst in per_node_pixels]
     max_deg = max(degrees) if degrees else 0
 
-    # 3) remplir les tableaux denses
+    # 3) fill the dense arrays
     node_pixel_index = -np.ones((n_nodes, max_deg), dtype=np.int32)
     node_N_weight = np.zeros((n_nodes, max_deg), dtype=np.float32)
     node_degree = np.asarray(degrees, dtype=np.int32)
@@ -392,13 +396,14 @@ def compute_pixel_state(displacement,
     pixel_coords : (Np,2)
     pixel_nodes  : (Np,4)
     pixel_shapeN : (Np,4)
-    gradx2, grady2 : (H,W) gradients de I2 sur la grille pixels
+    gradx2, grady2 : (H,W) gradients of I2 on the pixel grid
 
-    Retourne :
-      r      : (Np,) résidus
+    Returns
+    -------
+      r      : (Np,) residuals
       x_def  : (Np,2)
-      gx_def : (Np,) dI2/dx en x_def
-      gy_def : (Np,) dI2/dy en x_def
+      gx_def : (Np,) dI2/dx at x_def
+      gy_def : (Np,) dI2/dy at x_def
     """
     shapeN = pixel_shapeN[..., None]            # (Np,4,1)
     disp_local = displacement[pixel_nodes]      # (Np,4,2)
@@ -410,7 +415,7 @@ def compute_pixel_state(displacement,
     I1 = flat_nd_linear_interpolate(im1.T, x_ref.T)
     I2 = flat_nd_linear_interpolate(im2.T, x_def.T)
 
-    # gradients d'image 2 interpolés en x_def
+    # gradients of image 2 interpolated at x_def
     gx_def = flat_nd_linear_interpolate(gradx2.T, x_def.T)
     gy_def = flat_nd_linear_interpolate(grady2.T, x_def.T)
 
@@ -442,12 +447,12 @@ def jacobi_nodal_step_spring(displacement,
                              alpha_reg=0.0,
                              omega=0.5):
     """
-    Raffinement nodal LOCAL de type Jacobi relaxé avec régularisation ressorts.
+    LOCAL nodal refinement using relaxed Jacobi with spring regularization.
 
-    - On calcule pour chaque noeud i un incrément δu_i à partir de l'état courant
-      'displacement' (NON mis à jour dans la boucle).
-    - À la fin, on applique : u_new = u_old + omega * δu.
-    - Ça évite l'oscillation pair/impair typique du Gauss–Seidel.
+    - For each node i we compute an increment δu_i from the current ``displacement``
+      (NOT updated inside the loop).
+    - At the end apply: u_new = u_old + omega * δu.
+    - This avoids the even/odd oscillations typical of Gauss–Seidel.
 
     displacement         : (Nnodes,2)
     r                    : (Np,)
@@ -459,9 +464,9 @@ def jacobi_nodal_step_spring(displacement,
     node_neighbor_degree : (Nnodes,)
     node_neighbor_weight : (Nnodes, max_deg_neigh)
     lam                  : damping LM (image)
-    max_step             : norme max de δu_i
-    alpha_reg            : poids régularisation ressorts
-    omega                : facteur de sous-relaxation (0<omega<=1)
+    max_step             : maximum norm for δu_i
+    alpha_reg            : spring regularization weight
+    omega                : under-relaxation factor (0 < omega <= 1)
     """
     disp0 = displacement
     Nnodes, max_deg_pix   = node_pixel_index.shape
@@ -471,7 +476,7 @@ def jacobi_nodal_step_spring(displacement,
         deg_pix   = node_degree[i]
         deg_neigh = node_neighbor_degree[i]
 
-        # ---------- cas deg_pix == 0 : pas d'info image ----------
+        # ---------- case deg_pix == 0: no image information ----------
         def no_pixel_case(delta_acc_inner):
 
             def only_return_delta(_):
@@ -500,7 +505,7 @@ def jacobi_nodal_step_spring(displacement,
                 H = H_reg + 1e-8 * jnp.eye(2)
                 delta_i = -jnp.linalg.solve(H, g_loc)
 
-                # limite de pas
+                # step length limit
                 norm_delta = jnp.linalg.norm(delta_i)
                 factor = jnp.minimum(1.0, max_step / (norm_delta + 1e-12))
                 delta_i = delta_i * factor
@@ -510,7 +515,7 @@ def jacobi_nodal_step_spring(displacement,
             cond_reg = jnp.logical_and(alpha_reg != 0.0, deg_neigh > 0)
             return lax.cond(cond_reg, apply_reg_only, only_return_delta, operand=None)
 
-        # ---------- cas deg_pix > 0 : image + ressorts ----------
+        # ---------- case deg_pix > 0: image term + springs ----------
         def update_case(delta_acc_inner):
             idx_all = node_pixel_index[i]
             Ni_all  = node_N_weight[i]
@@ -540,7 +545,7 @@ def jacobi_nodal_step_spring(displacement,
             H_img = jnp.array([[H00 + lam_loc, H01],
                                [H01,          H11 + lam_loc]])
 
-            # ressorts
+            # springs
             u_i = disp0[i]
             idx_range_n = jnp.arange(max_deg_neigh)
             mask_n = idx_range_n < deg_neigh
@@ -574,7 +579,7 @@ def jacobi_nodal_step_spring(displacement,
     delta0 = jnp.zeros_like(displacement)
     delta_all = lax.fori_loop(0, Nnodes, body_fun, delta0)
 
-    # mise à jour simultanée + sous-relaxation
+    # simultaneous update + under-relaxation
     displacement_new = displacement + omega * delta_all
     return displacement_new
 
@@ -584,11 +589,11 @@ def reg_energy_spring_global(displacement,
                              node_neighbor_degree,
                              node_neighbor_weight):
     """
-    Énergie 'ressorts' globale :
+    Global "spring" energy:
 
       J_reg = 0.5 * Σ_{(i,j)} w_ij ||u_i - u_j||^2
 
-    où w_ij vient de build_node_neighbor_dense (∼1/||x_i-x_j||).
+    with w_ij coming from ``build_node_neighbor_dense`` (∼1/||x_i-x_j||).
     """
     u = displacement
     Nnodes, max_deg = node_neighbor_index.shape
@@ -605,7 +610,7 @@ def reg_energy_spring_global(displacement,
     diff = jnp.where(mask[..., None], u_i - u_j, 0.0)     # (Nnodes,max_deg,2)
     sq = jnp.sum(diff**2, axis=2)                         # (Nnodes,max_deg)
 
-    # même raisonnement, mais pondéré
+    # same idea, simply weighted
     J_reg = 0.25 * jnp.sum(w * sq)
     return J_reg
 
@@ -619,29 +624,29 @@ def compute_green_lagrange_strain_nodes_lsq(
     eps=1e-8,
 ):
     """
-    Champ de Green-Lagrange nodal via un ajustement affine local (LSQ pondéré).
+    Nodal Green-Lagrange field via a weighted local affine least-squares fit.
 
     Parameters
     ----------
     displacement : (Nnodes, 2)
-        Champ de déplacement nodal (config de référence).
+        Nodal displacement field (reference configuration).
     nodes_coord : (Nnodes, 2)
-        Coordonnées nodales dans la configuration de référence.
+        Nodal coordinates in the reference configuration.
     node_neighbor_index : (Nnodes, max_deg)
-        Indices des voisins pour chaque noeud (1er anneau ou k-anneaux).
+        Neighbor indices for each node (first ring or k-rings).
     node_neighbor_degree : (Nnodes,)
-        Nombre de voisins effectifs pour chaque noeud.
+        Effective number of neighbors for each node.
     gauge_length : float, optional
-        Longueur de jauge. Si > 0, w_j = exp(-(||dX_j|| / L)^2), sinon poids uniformes.
+        Gauge length. If > 0, w_j = exp(-(||dX_j|| / L)^2), otherwise weights are 1.
     eps : float, optional
-        Régularisation de la matrice normale.
+        Normal-matrix regularization.
 
     Returns
     -------
     F_all : (Nnodes, 2, 2)
-        Gradient de déformation F = I + ∇u.
+        Deformation gradient F = I + ∇u.
     E_all : (Nnodes, 2, 2)
-        Tenseur de Green-Lagrange E = 0.5 (FᵀF - I).
+        Green-Lagrange tensor E = 0.5 (FᵀF - I).
     """
     disp = jnp.asarray(displacement)
     X = jnp.asarray(nodes_coord)
@@ -660,7 +665,7 @@ def compute_green_lagrange_strain_nodes_lsq(
         idx_range = jnp.arange(max_deg)
         mask = idx_range < deg             # (max_deg,) bool
 
-        # Voisins effectifs (indices) - 0 utilisé comme remplissage masqué.
+        # Effective neighbors (indices) - 0 used as masked padding.
         neigh_ids = jnp.where(mask, idx_all, 0)
         xj = X[neigh_ids]                  # (max_deg, 2)
         uj = disp[neigh_ids]               # (max_deg, 2)
@@ -668,7 +673,7 @@ def compute_green_lagrange_strain_nodes_lsq(
         dX = xj - xi[None, :]              # (max_deg, 2)
         du = uj - ui[None, :]              # (max_deg, 2)
 
-        # Distances et poids
+        # Distances and weights
         r = jnp.linalg.norm(dX, axis=1)    # (max_deg,)
         base_w = mask.astype(jnp.float32)  # 0 pour les positions non actives
         w_exp = base_w * jnp.exp(-(r / (L + 1e-12)) ** 2)
@@ -677,7 +682,7 @@ def compute_green_lagrange_strain_nodes_lsq(
         w_col = w[:, None]                 # (max_deg, 1)
         Xw = dX * w_col                    # (max_deg, 2)
 
-        # Matrice normale A et seconds membres b0/b1
+        # Normal matrix A and right-hand sides b0/b1
         A = Xw.T @ dX + eps * jnp.eye(2)   # (2, 2)
         b0 = Xw.T @ du[:, 0]              # (2,)
         b1 = Xw.T @ du[:, 1]              # (2,)

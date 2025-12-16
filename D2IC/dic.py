@@ -1,4 +1,4 @@
-"""Utilitaires de corrélation d'images numériques basés sur D2IC."""
+"""Digital Image Correlation utilities built on top of D2IC."""
 
 import jax.numpy as jnp
 from jax import jit, value_and_grad
@@ -103,6 +103,13 @@ class Dic():
         self.mesh_path = mesh_path
         self._read_mesh()
         self.binning = 1.
+        self._image_shape = None
+        self._roi_mask = None
+        self._roi_flat_indices = None
+    
+    def __repr__(self):
+        """String representation of the Dic object."""
+        return f"Dic(mesh_path={self.mesh_path})"
 
     def precompute_pixel_data(self, im):
         """
@@ -122,6 +129,7 @@ class Dic():
         neighborhoods for mechanical regularization.
         """
         H, W = im.shape[:2]
+        self._image_shape = (H, W)
 
         # 1) Build pixel coordinates over the ROI
         jj, ii = np.meshgrid(np.arange(W), np.arange(H))
@@ -134,6 +142,9 @@ class Dic():
             mesh_nodes=np.asarray(self.node_coordinates_binned[:, :2]),
             mesh_elements=np.asarray(self.element_conectivity)
         )
+        mask = np.asarray(mask, dtype=bool).reshape(-1)
+        self._roi_mask = mask.reshape(H, W)
+        self._roi_flat_indices = np.flatnonzero(mask)
         pixel_coords = pixel_coords[mask]
 
         # 2) Mesh data (NumPy + JAX views)
@@ -186,19 +197,19 @@ class Dic():
     # properties definition
     @property
     def node_coordinates(self):
-        """Retourne les coordonnées nodales sous forme de tableau ``jax.numpy``."""
+        """Return nodal coordinates as a ``jax.numpy`` array."""
         return jnp.array(self.mesh.points) 
     
     @property
     def node_coordinates_binned(self):
-        """Retourne les coordonnées nodales divisées par le facteur de binning."""
+        """Return nodal coordinates divided by the binning factor."""
         return jnp.array(self.mesh.points) / self.binning
     
     @property
     def element_conectivity(self):
-        """Retourne la connectivité quadrilatère sous forme d'indices ``jax.numpy``."""
+        """Return quadrilateral connectivity as ``jax.numpy`` indices."""
         quad_blocks = []
-        # meshio >=5 stocke les blocs dans ``cells`` ; on concatène tous les quads.
+        # meshio >=5 stores the blocks in ``cells``; concatenate all quad blocks.
         for cell_block in getattr(self.mesh, "cells", []):
             cell_type = getattr(cell_block, "type", "")
             if cell_type.startswith("quad"):
@@ -206,11 +217,11 @@ class Dic():
         if quad_blocks:
             conn = np.concatenate(quad_blocks, axis=0)
             return jnp.array(conn)
-        # fallback pour les anciennes versions de meshio qui ne concaténaient pas
+        # fallback for older meshio versions where quads were not concatenated
         cells_dict = getattr(self.mesh, "cells_dict", {})
         if isinstance(cells_dict, dict) and "quad" in cells_dict:
             return jnp.array(cells_dict["quad"])
-        raise ValueError("Le maillage ne contient pas d'éléments quadrilatères reconnaissables.")
+        raise ValueError("No recognizable quadrilateral elements were found in the mesh.")
 
     def _compute_element_centers_binned(self):
         """
@@ -232,7 +243,7 @@ class Dic():
     
     # API_CANDIDATE
     def get_mesh_as_triangulation(self, displacement=0.0):
-        """Convertit le maillage quadrilatère en triangulation Matplotlib."""
+        """Convert the quadrilateral mesh into a Matplotlib triangulation."""
         # creat a triangulation of the mesh
         # each quad element is divided into two triangles
         # work only for 2d meshes
@@ -552,7 +563,7 @@ class Dic():
         if disp_guess is None:
             displacement = jnp.zeros_like(nodes_coord)
         else:
-            # ⚠ si binning != 1, il faudra qu’on re-discute ce /self.binning
+            # ⚠ if binning != 1 we might need to revisit this division by self.binning
             displacement = jnp.asarray(disp_guess) / self.binning
 
         im1 = jnp.asarray(im1)
@@ -583,7 +594,7 @@ class Dic():
         J_val_and_grad = jit(value_and_grad(J_wrapper))
 
 
-        # ---- initialisation CG ----
+        # ---- CG initialization ----
         d = jnp.zeros_like(displacement)
         g_prev = jnp.zeros_like(displacement)
         first = True
@@ -598,12 +609,12 @@ class Dic():
 
             print(f"[CG] iter {k:3d}  J={J_val_float:.4e}  ||g||={grad_norm:.3e}")
 
-            # critère d'arrêt
+            # stopping criterion
             if grad_norm < tol:
-                print(f"[CG] convergé à l’itération {k}, ||grad|| = {grad_norm:.3e}")
+                print(f"[CG] converged at iteration {k}, ||grad|| = {grad_norm:.3e}")
                 break
 
-            # ---- calcul direction ----
+            # ---- direction computation ----
             if first:
                 d = -g
                 first = False
@@ -613,17 +624,17 @@ class Dic():
                 beta = jnp.maximum(num / den, 0.0)
                 d = -g + beta * d
 
-            # produit scalaire grad·dir
+            # gradient·direction dot product
             gd = jnp.sum(g * d)
 
-            # ⚠ si pas une direction de descente → restart
+            # ⚠ restart when the direction is not descending
             if gd >= 0:
                 d = -g
                 gd = -jnp.sum(g * g)
 
             gd_float = float(gd)
 
-            # ---- backtracking Armijo ----
+            # ---- Armijo backtracking ----
             alpha = 1.0
             c = 1e-4
 
@@ -730,3 +741,83 @@ class Dic():
 
         displacement = displacement * self.binning
         return displacement
+
+    def compute_q1_pixel_displacement_field(self, nodal_displacement):
+        """
+        Evaluate the Q1 displacement field pixel by pixel inside the ROI.
+
+        Parameters
+        ----------
+        nodal_displacement : array-like, shape (Nnodes, 2)
+            Nodal field (Ux, Uy) used to interpolate the displacement within the
+            pixels of the reference image (after optional binning).
+
+        Returns
+        -------
+        tuple of ndarray
+            Two matrices ``(Ux_map, Uy_map)`` with the size of the processed
+            image, filled with ``NaN`` outside the ROI. Values are projected to
+            pixel positions in the deformed configuration to ease visualization
+            over the deformed image.
+        """
+        if self._image_shape is None or self._roi_mask is None:
+            raise RuntimeError(
+                "precompute_pixel_data must be called before evaluating the Q1 field."
+            )
+        if not hasattr(self, "pixel_nodes") or not hasattr(self, "pixel_shapeN"):
+            raise RuntimeError(
+                "Pixel/element projection information is not available."
+            )
+
+        disp = jnp.asarray(nodal_displacement)
+        n_nodes_expected = self.node_coordinates.shape[0]
+        if disp.shape != (n_nodes_expected, 2):
+            raise ValueError(
+                f"nodal_displacement must have shape ({n_nodes_expected}, 2)."
+            )
+
+        # Interpolation Q1 : u_p = sum_i N_i(x_p) * u_i
+        node_values = disp[self.pixel_nodes]                         # (Np, 4, 2)
+        pixel_disp = jnp.sum(self.pixel_shapeN[..., None] * node_values, axis=1)
+        pixel_disp_np = np.asarray(pixel_disp)
+
+        # Project pixel centers to the deformed configuration for visualization.
+        pixel_coords_ref = np.asarray(self.pixel_coords_ref)
+        pixel_coords_def = pixel_coords_ref + pixel_disp_np
+
+        def _scatter(values):
+            values = np.asarray(values)
+            H, W = self._image_shape
+            grid = np.full((H, W), np.nan, dtype=values.dtype)
+            if values.size == 0:
+                return grid
+
+            x_cont = pixel_coords_def[:, 0] - 0.5
+            y_cont = pixel_coords_def[:, 1] - 0.5
+            j0 = np.floor(x_cont).astype(int)
+            i0 = np.floor(y_cont).astype(int)
+            fx = x_cont - j0
+            fy = y_cont - i0
+
+            accum = np.zeros((H, W), dtype=values.dtype)
+            weights = np.zeros((H, W), dtype=np.float64)
+
+            def add(i_idx, j_idx, w):
+                mask = (i_idx >= 0) & (i_idx < H) & (j_idx >= 0) & (j_idx < W) & (w > 0)
+                if not np.any(mask):
+                    return
+                np.add.at(accum, (i_idx[mask], j_idx[mask]), values[mask] * w[mask])
+                np.add.at(weights, (i_idx[mask], j_idx[mask]), w[mask])
+
+            add(i0, j0, (1.0 - fx) * (1.0 - fy))
+            add(i0, j0 + 1, fx * (1.0 - fy))
+            add(i0 + 1, j0, (1.0 - fx) * fy)
+            add(i0 + 1, j0 + 1, fx * fy)
+
+            valid = weights > 0
+            grid[valid] = accum[valid] / weights[valid]
+            return grid
+
+        ux_map = _scatter(pixel_disp_np[:, 0])
+        uy_map = _scatter(pixel_disp_np[:, 1])
+        return ux_map, uy_map

@@ -1,5 +1,5 @@
 """
-Fonctions utilitaires pour les tutoriels et scripts CLI (visualisation + pipelines).
+Utility functions for the tutorials and CLI scripts (visualization + pipelines).
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from .dic_plotter import DICPlotter
 
 
 def plot_sparse_matches(im_ref: np.ndarray, im_def: np.ndarray, extras: dict, out_path: Path) -> None:
-    """Affiche les points appariés et les vecteurs déplacement initiaux."""
+    """Display the matched points and the initial displacement vectors."""
     pts_ref = extras["pts_ref"]
     pts_def = extras["pts_def"]
 
@@ -27,7 +27,7 @@ def plot_sparse_matches(im_ref: np.ndarray, im_def: np.ndarray, extras: dict, ou
     ax = axes[0]
     ax.imshow(im_ref, cmap="gray", origin="lower")
     ax.scatter(pts_ref[:, 0], pts_ref[:, 1], s=10, c="lime", edgecolors="k", linewidths=0.5)
-    ax.set_title("Référence + points retenus")
+    ax.set_title("Reference + retained points")
     ax.axis("off")
 
     ax = axes[1]
@@ -44,7 +44,7 @@ def plot_sparse_matches(im_ref: np.ndarray, im_def: np.ndarray, extras: dict, ou
         color="yellow",
         width=0.003,
     )
-    ax.set_title("Déformée + vecteurs d'appariement")
+    ax.set_title("Deformed + matching vectors")
     ax.axis("off")
 
     fig.tight_layout()
@@ -59,31 +59,12 @@ def plot_field(
     cmap: str = "jet",
     image_alpha: float = 0.6,
 ) -> None:
-    """Réalise un rendu PNG d'un champ (Ux/Uy ou Exx/Exy/Eyy)."""
+    """Render a PNG of a displacement or strain component (Ux/Uy or Exx/Exy/Eyy)."""
     field_norm = field.strip().lower()
     if field_norm in {"ux", "uy"}:
         fig, _ = plotter.plot_displacement_component(field, image_alpha=image_alpha, cmap=cmap)
     else:
-        values = plotter._get_strain_field(field)  # type: ignore[attr-defined]
-        label = plotter._latex_label(field, "strain")  # type: ignore[attr-defined]
-
-        fig, ax = plt.subplots(figsize=(6, 6))
-        ax.imshow(plotter.background_image, cmap="gray", origin="lower", alpha=1.0)
-        mesh = ax.tripcolor(
-            plotter.triangulation,
-            values,
-            shading="gouraud",
-            cmap=cmap,
-            alpha=image_alpha,
-            edgecolors="none",
-            linewidth=0.0,
-        )
-        quad_mesh = plotter._quad_mesh_collection()
-        if quad_mesh is not None:
-            ax.add_collection(quad_mesh)
-        ax.set_aspect("equal")
-        ax.set_title(label)
-        fig.colorbar(mesh, ax=ax, label=label)
+        fig, _ = plotter.plot_strain_component(field, image_alpha=image_alpha, cmap=cmap)
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
 
@@ -104,20 +85,20 @@ def run_dic_sequence(
     per_frame_callback: Callable[[int, np.ndarray, dict], None] | None = None,
 ) -> Tuple[np.ndarray, List[dict]]:
     """
-    Corrèle l'image de référence ``im_ref`` vers chaque image de ``images_def``.
-    Retourne les déplacements et l'historique solveur pour chaque frame.
-    Un callback optionnel peut être exécuté dès qu'une frame est validée.
+    Correlate the reference image ``im_ref`` against each image in ``images_def``.
+    Returns displacements and solver history for every frame.
+    An optional callback can run as soon as a frame is processed.
     """
     n_frames = len(images_def)
     if n_frames == 0:
-        raise ValueError("Aucune image déformée fournie à run_dic_sequence.")
+        raise ValueError("No deformed image was provided to run_dic_sequence.")
 
     n_nodes = int(dic.node_coordinates.shape[0])
     disp_all = np.zeros((n_frames, n_nodes, 2), dtype=np.float32)
     history_all: List[dict] = [{} for _ in range(n_frames)]
 
     def _limit_extrapolation(guess: np.ndarray, anchor: np.ndarray) -> np.ndarray:
-        """Limite la norme du pas d'extrapolation pour rester robuste."""
+        """Limit the extrapolation step norm to keep the update robust."""
         delta = guess - anchor
         norms = np.linalg.norm(delta, axis=1)
         mask = norms > max_extrapolation
@@ -126,9 +107,9 @@ def run_dic_sequence(
             delta[mask] = delta[mask] * scale[:, None]
         return anchor + delta
 
-    # Frame 0 : initialisation par correspondances parcimonieuses
+    # Frame 0: initialization via sparse correspondences
     disp_guess = disp_guess_first if disp_guess_first is not None else np.zeros((n_nodes, 2), dtype=np.float32)
-    print("   [Frame 0] DIC global avec champ initial issu des features")
+    print("   [Frame 0] Global DIC with feature-based initial field")
     disp0, hist0 = dic.run_dic(
         im_ref,
         images_def[0],
@@ -155,9 +136,9 @@ def run_dic_sequence(
     if per_frame_callback is not None:
         per_frame_callback(0, disp_all[0], history_all[0])
 
-    # Frames suivantes : propagation + vitesse optionnelle
+    # Subsequent frames: propagation + optional velocity prediction
     for k in range(1, n_frames):
-        print(f"   [Frame {k}] Propagation du déplacement précédent")
+        print(f"   [Frame {k}] Propagating the previous displacement")
         disp_guess = np.asarray(disp_all[k - 1])
         if use_velocity and k >= 2:
             v_prev = disp_all[k - 1] - disp_all[k - 2]
@@ -214,50 +195,51 @@ def run_pipeline_sequence(
     plot_alpha: float,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Pipeline linéaire : lecture des images, maillage, DIC séquentielle, puis exports.
+    Linear pipeline: load images, mesh the ROI, run sequential DIC, then export results.
 
-    Retour :
-        - disp_all : déplacements (N_frames, N_nodes, 2)
-        - E_all_seq : déformations de Green-Lagrange (N_frames, N_nodes, 2, 2)
+    Returns
+    -------
+        - disp_all : displacements (N_frames, N_nodes, 2)
+        - E_all_seq : Green–Lagrange strains (N_frames, N_nodes, 2, 2)
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print("1) Chargement des données (séquence)")
+    print("1) Loading sequence data")
     mask_path = img_dir / mask_filename
     mesh_path = out_dir / f"roi_mesh_{int(mesh_element_size_px)}px_sequence.msh"
     im_ref_path = img_dir / ref_image_name
 
     if not im_ref_path.exists():
-        raise FileNotFoundError(f"Image de référence introuvable : {im_ref_path}")
+        raise FileNotFoundError(f"Reference image not found: {im_ref_path}")
     if not mask_path.exists():
-        raise FileNotFoundError(f"Masque ROI introuvable : {mask_path}")
+        raise FileNotFoundError(f"ROI mask not found: {mask_path}")
 
     im_ref = imread(im_ref_path).astype(np.float32)
 
     all_imgs = sorted(img_dir.glob(image_pattern))
     im_def_paths = [p for p in all_imgs if p.name != im_ref_path.name]
     if len(im_def_paths) == 0:
-        raise FileNotFoundError(f"Aucune image déformée trouvée dans {img_dir} (pattern {image_pattern}).")
+        raise FileNotFoundError(f"No deformed image found in {img_dir} (pattern {image_pattern}).")
 
     images_def = [imread(path).astype(np.float32) for path in im_def_paths]
     n_frames = len(images_def)
-    print(f"   - Image réf : {im_ref.shape}")
-    print(f"   - {n_frames} images déformées détectées : {[p.name for p in im_def_paths]}")
+    print(f"   - Reference image shape: {im_ref.shape}")
+    print(f"   - {n_frames} deformed images detected: {[p.name for p in im_def_paths]}")
 
-    print(f"2) Génération du maillage à partir du masque (taille cible {mesh_element_size_px:.0f} px)")
+    print(f"2) Mesh generation from the mask (target size {mesh_element_size_px:.0f} px)")
     mesh_path_generated = generate_roi_mesh(mask_path, element_size=mesh_element_size_px, msh_path=str(mesh_path))
     if mesh_path_generated is None:
-        raise RuntimeError("Echec de la génération du maillage.")
+        raise RuntimeError("Failed to generate the mesh.")
     mesh_path = mesh_path_generated
-    print(f"   - Maillage généré : {mesh_path}")
+    print(f"   - Mesh generated: {mesh_path}")
 
-    print("3) Création de l'objet Dic et pré-calcul des données pixel")
+    print("3) Create the Dic object and precompute pixel data")
     dic = Dic(mesh_path=str(mesh_path))
     dic.precompute_pixel_data(jnp.asarray(im_ref))
     n_nodes = int(dic.node_coordinates.shape[0])
-    print(f"   - Nombre de nœuds : {n_nodes}")
+    print(f"   - Number of nodes: {n_nodes}")
 
-    print("4) Estimation du déplacement initial (frame 0) par correspondances parcimonieuses")
+    print("4) Initial displacement (frame 0) from sparse correspondences")
     disp_guess, extras = dic.compute_feature_disp_guess_big_motion(
         im_ref,
         images_def[0],
@@ -267,10 +249,10 @@ def run_pipeline_sequence(
         refine=True,
         search_dilation=5.0,
     )
-    print(f"   - {extras['pts_ref'].shape[0]} correspondances retenues après RANSAC")
+    print(f"   - {extras['pts_ref'].shape[0]} correspondences kept after RANSAC")
     plot_sparse_matches(im_ref, images_def[0], extras, out_dir / "01_sparse_matches_first.png")
 
-    print("5) DIC globale séquentielle (CG pixelwise + régularisation ressort)")
+    print("5) Sequential global DIC (pixelwise CG + spring regularization)")
     frames_to_plot_arr = (
         np.arange(n_frames, dtype=int) if frames_to_plot is None else np.unique(np.asarray(frames_to_plot, dtype=int))
     )
@@ -279,12 +261,12 @@ def run_pipeline_sequence(
         max_idx = int(frames_to_plot_arr.max())
         if min_idx < 0 or max_idx >= n_frames:
             raise ValueError(
-                f"frames_to_plot contient des indices hors bornes (0..{n_frames - 1}): {frames_to_plot_arr}"
+                f"frames_to_plot contains indices outside 0..{n_frames - 1}: {frames_to_plot_arr}"
             )
     frames_to_plot_set = {int(idx) for idx in frames_to_plot_arr.tolist()}
-    print(f"   - Frames visualisées : {frames_to_plot_arr}")
+    print(f"   - Frames selected for visualization: {frames_to_plot_arr}")
 
-    print("6) Post-traitement progressif : calculs + exports effectués à la volée")
+    print("6) Progressive post-processing: calculations + exports on the fly")
     F_all_seq = np.zeros((n_frames, n_nodes, 2, 2), dtype=np.float64)
     E_all_seq = np.zeros_like(F_all_seq)
     frame_fields_dir = out_dir / "per_frame_fields"
@@ -355,7 +337,7 @@ def run_pipeline_sequence(
                 cmap=plot_cmap,
                 image_alpha=plot_alpha,
             )
-            print(f"      ↳ Figures frame {tag} sauvegardées.")
+            print(f"      ↳ Frame {tag} figures saved.")
 
     disp_all, history_all = run_dic_sequence(
         dic,
@@ -371,12 +353,12 @@ def run_pipeline_sequence(
         n_sweeps_local=local_sweeps,
         per_frame_callback=_export_frame_results,
     )
-    print(f"   - Séquence traitée : {disp_all.shape[0]} frames")
-    print(f"   - Dernier J={history_all[-1]['history'][-1][0]:.3e}, ||grad||={history_all[-1]['history'][-1][1]:.3e}")
-    print(f"   - Champs calculés : F_all {F_all_seq.shape}, E_all {E_all_seq.shape}")
-    print(f"   - Sauvegardes par frame : {frame_fields_dir}")
+    print(f"   - Sequence processed: {disp_all.shape[0]} frames")
+    print(f"   - Last J={history_all[-1]['history'][-1][0]:.3e}, ||grad||={history_all[-1]['history'][-1][1]:.3e}")
+    print(f"   - Fields computed: F_all {F_all_seq.shape}, E_all {E_all_seq.shape}")
+    print(f"   - Per-frame saves: {frame_fields_dir}")
 
-    print("7) Sauvegarde compacte finale des champs (Ux, Uy, Exx, Exy, Eyy)")
+    print("7) Final compact save of Ux, Uy, Exx, Exy, Eyy")
     np.savez(
         out_dir / "fields_butterfly_sequence.npz",
         Ux=np.asarray(disp_all[..., 0]),
@@ -385,8 +367,8 @@ def run_pipeline_sequence(
         Exy=np.asarray(E_all_seq[..., 0, 1]),
         Eyy=np.asarray(E_all_seq[..., 1, 1]),
     )
-    print(f"   - Champs sauvegardés dans {out_dir / 'fields_butterfly_sequence.npz'}")
-    print(f"Figures exportées progressivement dans {out_dir}")
+    print(f"   - Fields saved to {out_dir / 'fields_butterfly_sequence.npz'}")
+    print(f"Figures exported progressively to {out_dir}")
     return disp_all, E_all_seq
 
 

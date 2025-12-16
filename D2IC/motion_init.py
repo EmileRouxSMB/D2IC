@@ -1,4 +1,4 @@
-"""Outils d'initialisation grossière pour les grands déplacements."""
+"""Coarse initialization tools for large displacements."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from skimage.util import view_as_windows
 
 
 def _ensure_gray_float(image: np.ndarray) -> np.ndarray:
-    """Convertir une image éventuelle RGB en niveaux de gris flottants."""
+    """Convert an optional RGB image into floating-point grayscale."""
     arr = np.asarray(image)
     if arr.ndim == 3 and arr.shape[2] in (3, 4):
         arr = rgb2gray(arr)
@@ -22,21 +22,21 @@ def _ensure_gray_float(image: np.ndarray) -> np.ndarray:
 
 
 def phase_corr_shift(I0: np.ndarray, I1: np.ndarray, eps: float = 1e-12, subpix: bool = False) -> np.ndarray:
-    """Estimer la translation globale entre deux images par corrélation de phase.
+    """Estimate the global translation between two images via phase correlation.
 
     Parameters
     ----------
     I0, I1 : np.ndarray
-        Images de référence et déformée (2D) déjà converties en niveaux de gris.
+        Reference and deformed 2D images already converted to grayscale.
     eps : float, optional
-        Petit terme pour éviter la division par zéro dans le domaine fréquentiel.
+        Small term to avoid division by zero in the frequency domain.
     subpix : bool, optional
-        Active un affinage sub-pixel (non implémenté dans cette version).
+        Enables sub-pixel refinement (not implemented in this version).
 
     Returns
     -------
     np.ndarray, shape (2,)
-        Translation estimée ``(dx, dy)``.
+        Estimated translation ``(dx, dy)``.
     """
     ref = _ensure_gray_float(I0)
     mov = _ensure_gray_float(I1)
@@ -47,19 +47,19 @@ def phase_corr_shift(I0: np.ndarray, I1: np.ndarray, eps: float = 1e-12, subpix:
 
 
 def rotation_scale_logpolar(I0: np.ndarray, I1: np.ndarray, center: tuple[float, float] | None = None) -> tuple[float, float]:
-    """Récupérer l'écart de rotation et d'échelle via transformation log-polaire.
+    """Recover rotation and scale mismatch via a log-polar transform.
 
     Parameters
     ----------
     I0, I1 : np.ndarray
-        Images de référence et déformée (2D) en niveaux de gris.
+        Reference and deformed grayscale images (2D).
     center : tuple of float, optional
-        Centre à utiliser pour la transformation polaire; par défaut centre de l'image.
+        Center to use for the polar transform; defaults to the image center.
 
     Returns
     -------
     tuple of float
-        ``(dtheta, scale)`` représentant la rotation (rad) et le facteur d'échelle.
+        ``(dtheta, scale)`` representing the rotation (rad) and scale factor.
     """
     ref = _ensure_gray_float(I0)
     mov = _ensure_gray_float(I1)
@@ -75,21 +75,21 @@ def rotation_scale_logpolar(I0: np.ndarray, I1: np.ndarray, center: tuple[float,
 
 
 def select_patch_centers(I: np.ndarray, K: int = 16, min_dist: int = 32) -> np.ndarray:
-    """Sélectionner des centres de patchs texturés et répartis sur l'image.
+    """Select textured patch centers spread across the image.
 
     Parameters
     ----------
     I : np.ndarray
-        Image (2D) en niveaux de gris.
+        2D grayscale image.
     K : int, optional
-        Nombre de centres souhaité.
+        Number of desired centers.
     min_dist : int, optional
-        Distance minimale (pixels) entre deux centres retenus.
+        Minimum distance (pixels) between retained centers.
 
     Returns
     -------
     np.ndarray, shape (<=K, 2)
-        Centres retenus sous la forme ``(x, y)``.
+        Selected centers as ``(x, y)`` coordinates.
     """
     img = _ensure_gray_float(I)
     response = corner_harris(img, method="k", k=0.05, sigma=1.2)
@@ -126,25 +126,25 @@ def match_patch_zncc(
     search: int = 16,
     pred: tuple[float, float] = (0.0, 0.0),
 ) -> tuple[np.ndarray, float] | None:
-    """Comparer un patch par ZNCC avant/après pour retrouver le déplacement le plus probable.
+    """Compare a patch using ZNCC before/after to retrieve the most likely displacement.
 
     Parameters
     ----------
     I0, I1 : np.ndarray
-        Images de référence et déformée (2D) en niveaux de gris.
+        Reference and deformed grayscale images.
     p : np.ndarray
-        Centre du patch dans ``I0`` sous la forme ``(x, y)``.
+        Patch center in ``I0`` expressed as ``(x, y)``.
     win : int, optional
-        Taille (impair) de la fenêtre de patch.
+        Odd patch window size.
     search : int, optional
-        Demi-largeur de la zone de recherche autour de la prédiction.
+        Half-width of the search area around the prediction.
     pred : tuple of float, optional
-        Déplacement initial estimé ``(dx, dy)``.
+        Initial displacement estimate ``(dx, dy)``.
 
     Returns
     -------
     tuple (np.ndarray, float) or None
-        Déplacement ``(dx, dy)`` et score ZNCC associé. ``None`` si le patch est invalide.
+        Displacement ``(dx, dy)`` and ZNCC score. ``None`` if the patch is invalid.
     """
     I0g = _ensure_gray_float(I0)
     I1g = _ensure_gray_float(I1)
@@ -185,7 +185,7 @@ def match_patch_zncc(
 def _inverse_distance_weighting(
     pts: np.ndarray, values: np.ndarray, power: float = 2.0
 ) -> Callable[[np.ndarray], np.ndarray]:
-    """Créer un prédicteur par pondération inverse de la distance."""
+    """Create a predictor based on inverse-distance weighting."""
 
     def predict(xy: np.ndarray) -> np.ndarray:
         q = np.atleast_2d(np.asarray(xy, dtype=np.float64))
@@ -213,25 +213,25 @@ def interpolate_displacement_field(
     method: str = "rbf",
     smooth: float | None = None,
 ) -> Callable[[np.ndarray], np.ndarray]:
-    """Interpoler un champ de déplacement lisse à partir de correspondances éparses.
+    """Interpolate a smooth displacement field from sparse correspondences.
 
     Parameters
     ----------
     pts_ref, pts_def : np.ndarray
-        Points correspondants ``(x, y)`` dans les images de référence et déformée.
+        Matching points ``(x, y)`` in the reference and deformed images.
     image_shape : tuple of int
-        Taille de l'image de référence ``(H, W)``. Utilisée uniquement pour
-        l'échelle, l'interpolation renvoyant un prédicteur continu.
+        Reference image size ``(H, W)``. Only used for scaling since the
+        interpolant returns a continuous predictor.
     method : {"rbf", "tps"}
-        Type d'interpolant demandé. ``tps`` s'appuie sur une RBF à plaque mince.
+        Requested interpolant type. ``tps`` uses a thin-plate-spline RBF.
     smooth : float, optional
-        Paramètre de lissage passé au solveur RBF. ``None`` revient au défaut.
+        Smoothing parameter passed to the RBF solver. ``None`` keeps the default.
 
     Returns
     -------
     callable
-        Fonction ``u(xy)`` retournant un tableau ``(m, 2)`` de déplacements
-        pour les positions ``xy`` fournies.
+        Function ``u(xy)`` returning an array ``(m, 2)`` of displacements for
+        the provided ``xy`` positions.
     """
     pts_ref = np.asarray(pts_ref, dtype=np.float64)
     pts_def = np.asarray(pts_def, dtype=np.float64)
@@ -241,7 +241,7 @@ def interpolate_displacement_field(
     if n == 0:
         return lambda xy: np.zeros((np.atleast_2d(xy).shape[0], 2), dtype=np.float64)
 
-    # Cas dégénérés : trop peu de points pour un modèle riche -> déplacement moyen.
+    # Degenerate cases: too few points for a rich model -> use the average displacement.
     if n < 3:
         mean_disp = disp.mean(axis=0)
 
@@ -281,8 +281,8 @@ def interpolate_displacement_field(
 
             def predict(xy: np.ndarray) -> np.ndarray:
                 q = np.atleast_2d(np.asarray(xy, dtype=np.float64))
-                # Rbf extrapole en douceur en dehors de l'enveloppe convexe, mais on
-                # reste prudent en limitant la croissance numérique.
+                # Rbf extrapolates smoothly outside the convex hull, but limit
+                # numerical growth to stay safe.
                 dx = rbf_x(q[:, 0], q[:, 1])
                 dy = rbf_y(q[:, 0], q[:, 1])
                 res = np.vstack([dx, dy]).T
@@ -290,10 +290,10 @@ def interpolate_displacement_field(
 
             return predict
         except Exception:
-            # On retombe sur un schéma local si l'ajustement RBF échoue (matrice singulière).
+            # Fall back to a local scheme if the RBF fit fails (singular matrix).
             pass
 
-    # Fallback sans SciPy ou en cas d'échec : interpolation par IDW simple.
+    # Fallback without SciPy or in case of failure: simple IDW interpolation.
     idw = _inverse_distance_weighting(pts_ref, disp)
     return idw
 
@@ -304,21 +304,21 @@ def make_displacement_predictor(
     image_shape: tuple[int, int],
     method: str = "rbf",
 ) -> Callable[[np.ndarray], np.ndarray]:
-    """Construire un prédicteur de déplacement continu à partir de matches épars.
+    """Build a continuous displacement predictor from sparse matches.
 
     Parameters
     ----------
     pts_ref, pts_def : np.ndarray
-        Points correspondants ``(x, y)`` dans les images de référence et déformée.
+        Matching points ``(x, y)`` in the reference and deformed images.
     image_shape : tuple of int
-        Taille de l'image de référence ``(H, W)``.
+        Size of the reference image ``(H, W)``.
     method : str, optional
-        Méthode d'interpolation à utiliser (``"rbf"`` ou ``"tps"``).
+        Interpolation method to use (``"rbf"`` or ``"tps"``).
 
     Returns
     -------
     callable
-        Fonction ``pred(p)`` qui renvoie ``(dx, dy)`` pour un point ou un lot de points.
+        Function ``pred(p)`` returning ``(dx, dy)`` for one or many points.
     """
     pts_ref = np.asarray(pts_ref, dtype=np.float64)
     pts_def = np.asarray(pts_def, dtype=np.float64)
@@ -332,7 +332,7 @@ def make_displacement_predictor(
     if n >= 3:
         core = interpolate_displacement_field(pts_ref, pts_def, image_shape, method=method)
     else:
-        # Trop peu de points : prédiction constante robuste.
+        # Too few points: fall back to a robust constant prediction.
         core = lambda xy: np.repeat(mean_disp[None, :], np.atleast_2d(xy).shape[0], axis=0)
 
     def wrapper(p: np.ndarray) -> np.ndarray:
@@ -354,29 +354,29 @@ def big_motion_sparse_matches(
     interp_method: str | None = "rbf",
     centers: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Obtenir des correspondances éparses robustes adaptées aux grands déplacements.
+    """Obtain robust sparse correspondences suited for large displacements.
 
     Parameters
     ----------
     I0, I1 : np.ndarray
-        Images de référence et déformée (2D ou 3D).
+        Reference and deformed images (2D or 3D).
     K : int, optional
-        Nombre ciblé de patchs valides.
+        Target number of valid patches.
     win : int, optional
-        Taille (impair) des patchs comparés par ZNCC.
+        Odd patch size for ZNCC comparisons.
     search : int, optional
-        Demi-largeur de la zone de recherche pour chaque patch.
+        Half-width of the search zone for each patch.
     interp_method : {"rbf", "tps", None}, optional
-        Méthode d'interpolation pour améliorer la prédiction locale du déplacement
-        à partir des matches déjà trouvés. ``None`` désactive cette amélioration.
+        Interpolation strategy used to improve local displacement predictions
+        from already-found matches. ``None`` disables that refinement.
     centers : np.ndarray, optional
-        Centres explicites ``(x, y)`` où lancer une comparaison de patchs. Si
-        ``None`` (défaut), les centres sont sélectionnés automatiquement.
+        Explicit centers ``(x, y)`` for patch matching. If ``None`` (default),
+        centers are selected automatically.
 
     Returns
     -------
     tuple of np.ndarray
-        ``(pts_ref, pts_def, scores)`` où les tableaux ont la forme ``(n, 2)``.
+        ``(pts_ref, pts_def, scores)`` where each array has shape ``(n, 2)``.
     """
     ref = _ensure_gray_float(I0)
     mov = _ensure_gray_float(I1)
@@ -412,8 +412,8 @@ def big_motion_sparse_matches(
         if out is not None:
             disp, score = out
             matches.append((p, p + disp, score))
-            # Dès que suffisamment de matches sont disponibles, on interpole un champ
-            # lisse pour mieux guider les patchs suivants (déplacements non affines).
+            # Once enough matches are available, interpolate a smooth field to
+            # better guide subsequent patches (non-affine motions).
             if interp_method is not None and len(matches) >= 3:
                 pts_ref = np.stack([m[0] for m in matches], axis=0)
                 pts_def = np.stack([m[1] for m in matches], axis=0)

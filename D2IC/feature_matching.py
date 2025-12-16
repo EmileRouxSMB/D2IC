@@ -31,7 +31,7 @@ def _points_in_mesh_area(points, mesh_nodes=None, mesh_elements=None, dilation: 
 
 
 def refine_matches_ncc(I0, I1, pts0, pts1_pred, win: int = 31, search: int = 3):
-    """Affiner les correspondances par corrélation croisée normalisée sous-pixel."""
+    """Refine correspondences using sub-pixel normalized cross-correlation."""
     I0 = np.asarray(I0)
     I1 = np.asarray(I1)
     pts0 = np.asarray(pts0)
