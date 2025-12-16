@@ -1,0 +1,12 @@
+*.venv
+*.pyc
+*checkpoint.ipynb
+*.pos
+*.msh
+*.geo
+__pycache__/*
+.ipynb_checkpoints/*
+*_workdir*
+*.egg-info
+*.geo_unrolled
+_outputs*
