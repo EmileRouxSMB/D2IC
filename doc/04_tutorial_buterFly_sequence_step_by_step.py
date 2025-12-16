@@ -1,16 +1,16 @@
 """
-Tutoriel pas à pas (hors notebook) de corrélation DIC sur une SÉQUENCE d'images "ButterFly".
-Pensé pour les personnes peu à l'aise avec Python : il suffit d'ajuster les paramètres ci-dessous.
+Step-by-step (non-notebook) DIC workflow on the "ButterFly" image SEQUENCE.
+Designed for users not familiar with Python: simply tweak the parameters below.
 
-Comment lancer :
+How to run:
     python doc/tutorial_buterFly_sequence_step_by_step.py
 
-Ce que le script produit automatiquement :
- 1) génération du maillage depuis le masque binaire ROI,
- 2) estimation des déplacements image par image,
- 3) calcul des déformations nodales,
- 4) export PNG des champs Ux, Uy, Exx/Exy/Eyy,
- 5) sauvegarde compacte de tous les champs dans un fichier .npz.
+What the script does automatically:
+ 1) generate the mesh from the ROI binary mask,
+ 2) estimate the displacements frame by frame,
+ 3) compute nodal strains,
+ 4) export PNGs of the Ux, Uy, Exx/Exy/Eyy fields,
+ 5) save all fields compactly into a .npz file.
 """
 
 from __future__ import annotations
@@ -24,56 +24,55 @@ import numpy as np
 
 from D2IC.app_utils import run_pipeline_sequence as run_pipeline_sequence_app
 
-# Backend non interactif pour sauvegarder les figures sans écran.
+# Non-interactive backend so figures can be saved without a display.
 matplotlib.use("Agg")
 
-# Configuration JAX : float64 pour se rapprocher du notebook, CPU par défaut pour la portabilité.
-jax.config.update("jax_enable_x64", True)
+# JAX configuration: float64 to match the notebook, CPU fallback for portability.
 jax.config.update("jax_platform_name", "gpu")
 
 # --------------------------------------------------------------------------- #
-#                PARAMÈTRES À ADAPTER (SECTION POUR NON EXPERTS)              #
+#                PARAMETERS TO ADJUST (SECTION FOR NON-EXPERTS)               #
 # --------------------------------------------------------------------------- #
-# Racine du dépôt (laisser par défaut si le script reste dans doc/).
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# Repository root (leave default if the script stays inside doc/).
+PWD = Path.cwd().resolve()
 
-# Dossier contenant la séquence d'images + le masque ROI.
-IMG_DIR = REPO_ROOT / "doc" / "img" / "ButterFlyDP600L2_seri"
-REF_IMAGE_NAME = "VIS_001.tif"  # image de référence
-MASK_FILENAME = "roi.BMP"  # masque binaire de la zone d'intérêt
-IMAGE_PATTERN = "VIS_*.tif"  # motif pour lister les images déformées
+# Folder containing the image sequence + ROI mask.
+IMG_DIR = PWD  / "img" / "butterFly"
+REF_IMAGE_NAME = "VIS_0000.tif"  # reference image
+MASK_FILENAME = "roi.tif"  # binary ROI mask
+IMAGE_PATTERN = "VIS_*.tif"  # pattern used to list the deformed images
 
-# Dossier où seront écrits le maillage, les figures et le .npz.
-OUT_DIR = Path(__file__).resolve().parent / "_outputs" / "sequence_DP600L2"
+# Output folder for the mesh, figures, and .npz file.
+OUT_DIR = PWD / "_outputs" / "sequence_butterFly"
 
-# Paramètres de génération du maillage ROI.
+# ROI mesh generation parameter.
 MESH_ELEMENT_SIZE_PX = 40.0
 
-# Paramètres DIC globaux (solver CG) et locaux.
+# Global DIC (CG solver) and local refinement parameters.
 DIC_MAX_ITER = 400
 DIC_TOL = 1e-2
 DIC_REG_TYPE = "spring"
 DIC_ALPHA_REG = 0.5
-LOCAL_SWEEPS = 3  # mettre 0 pour désactiver le raffinement nodal
+LOCAL_SWEEPS = 3  # set to 0 to disable nodal refinement
 
-# Options d'initialisation pour les frames suivantes.
+# Initialization options for subsequent frames.
 USE_VELOCITY = True
 VEL_SMOOTHING = 0.5
 
-# Paramètres de calcul de déformations.
+# Strain computation parameters.
 STRAIN_K_RING = 2
 STRAIN_GAUGE_LENGTH = 200.0
 
-# Liste des frames à exporter (laisser None pour toutes).
+# Frames to export (leave None for all).
 FRAMES_TO_PLOT = None
 
-# Export des images : colormap et transparence.
+# Image export settings: colormap and alpha.
 PLOT_CMAP = "jet"
 PLOT_ALPHA = 0.6
 
 
 def run_pipeline_sequence() -> Tuple[np.ndarray, np.ndarray]:
-    """Wrapper du pipeline complet avec les paramètres définis en tête de fichier."""
+    """Wrapper around the full pipeline using the parameters defined above."""
     return run_pipeline_sequence_app(
         img_dir=IMG_DIR,
         ref_image_name=REF_IMAGE_NAME,
