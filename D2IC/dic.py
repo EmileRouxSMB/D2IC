@@ -1,4 +1,4 @@
-"""Digital Image Correlation utilities built on top of D2IC."""
+"""Core DIC routines used throughout D2IC."""
 
 import jax
 import jax.numpy as jnp
@@ -32,26 +32,7 @@ from D2IC.feature_matching import (
 
 
 def build_weighted_rbf_interpolator(x, u, w, smoothing=1e-3):
-    """
-    Build a ZNCC-weighted thin-plate spline RBF interpolator for 2D displacement.
-
-    Parameters
-    ----------
-    x : array-like, shape (N, 2)
-        Reference positions.
-    u : array-like, shape (N, 2)
-        Displacements associated with ``x``.
-    w : array-like, shape (N,)
-        Non-negative weights (e.g., ZNCC scores).
-    smoothing : float, optional
-        Tikhonov-like diagonal damping added to the normal equations.
-
-    Returns
-    -------
-    callable
-        Function ``interp(q)`` returning interpolated displacements at query
-        positions ``q``.
-    """
+    """Thin-plate RBF interpolator where each correspondence carries a non-negative weight."""
     x = np.asarray(x, dtype=np.float64)
     u = np.asarray(u, dtype=np.float64)
     w = np.asarray(w, dtype=np.float64).reshape(-1)
@@ -99,7 +80,7 @@ def J_total(
     node_neighbor_weight,
     alpha_reg,
 ):
-    """Total energy: image mismatch plus optional spring regularization."""
+    """Image mismatch energy optionally augmented with the nodal spring penalty."""
     J_img = J_pixelwise_core(
         disp,
         im1_T,
@@ -155,7 +136,7 @@ def _cg_solve(
     tol,
     save_history,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """CG loop moved to lax.while_loop and jitted for performance."""
+    """Conjugate-gradient loop expressed as a jitted ``lax.while_loop``."""
     save_history = bool(save_history)
     disp0 = jnp.asarray(disp0, dtype=jnp.float32)
     tol = jnp.asarray(tol, dtype=jnp.float32)
@@ -316,18 +297,11 @@ def _cg_solve(
 
 
 class Dic():
-    """Pixelwise DIC solver built on a quadrilateral mesh."""
+    """Pixelwise DIC solver operating on a quadrilateral mesh."""
 
     # API_CANDIDATE
     def __init__(self, mesh_path=""):
-        """
-        Initialize the solver by reading the mesh and basic geometry caches.
-
-        Parameters
-        ----------
-        mesh_path : str
-            Path to the Gmsh ``.msh`` file describing the ROI mesh.
-        """
+        """Load the mesh and prepare basic geometry caches from ``mesh_path``."""
         self.mesh = None
         self.mesh_path = mesh_path
         self._read_mesh()
@@ -335,8 +309,8 @@ class Dic():
         self._image_shape = None
         self._roi_mask = None
         self._roi_flat_indices = None
-        # Avoids retracing/recompilation across frames by preventing closure capture and by reusing a stable jitted function.
-        # Donate the displacement buffer to reduce large GPU allocations each solve.
+        # Keep a stable jitted solver to avoid retracing every frame.
+        # Donating the displacement buffer limits repeated large allocations.
         self._solve_jit = jax.jit(
             _cg_solve,
             static_argnums=(10, 12),
@@ -344,25 +318,15 @@ class Dic():
         )
     
     def __repr__(self):
-        """String representation of the Dic object."""
+        """Return a compact identifier including the mesh path."""
         return f"Dic(mesh_path={self.mesh_path})"
 
     def precompute_pixel_data(self, im):
-        """
-        Precompute pixel-to-element mappings and shape functions for one ROI.
+        """Build pixel-to-element maps and Q4 shape functions for the reference ROI.
 
-        Parameters
-        ----------
-        im : array-like
-            Reference image (H, W) after optional binning.
-
-        Notes
-        -----
-        Builds pixel coordinates, filters them inside the mesh footprint,
-        assigns each pixel to an element, and precomputes Q4 shape functions
-        ``N_i(x_p)`` so pixelwise residuals can be evaluated efficiently.
-        Also constructs CSR-like node→pixel structures and geometric
-        neighborhoods for mechanical regularization.
+        Takes the (possibly binned) reference image, keeps pixels inside the mesh footprint,
+        precomputes ``pixel_nodes``, ``pixel_shapeN``, and CSR node→pixel structures, and
+        caches neighbor lists for the spring regularization.
         """
         H, W = im.shape[:2]
         self._image_shape = (H, W)
@@ -403,14 +367,14 @@ class Dic():
         pixel_N_jax = jnp.asarray(pixel_N_jax, dtype=jnp.float32)
         xi_eta = jnp.asarray(xi_eta, dtype=jnp.float32)
 
-        # 4) Store
+        # Cache everything needed by the solver
         self.pixel_coords_ref = pixel_coords_jax      # (Np,2)
         self.pixel_elts = pixel_elts                  # (Np,)
         self.pixel_nodes = pixel_nodes_jax            # (Np,4)
         self.pixel_shapeN = pixel_N_jax               # (Np,4)
         self.pixel_xi_eta = xi_eta                    # optionnel
-
-        # CSR node → pixels
+    
+        # Build CSR-style node → pixel data structures
         n_nodes = self.node_coordinates_binned.shape[0]
         node_pixel_index, node_N_weight, node_degree = build_node_pixel_dense(
             np.asarray(self.pixel_nodes),
@@ -421,7 +385,7 @@ class Dic():
         self.node_N_weight    = jnp.asarray(node_N_weight,    dtype=jnp.float32) # (Nnodes, max_deg)
         self.node_degree      = jnp.asarray(node_degree,      dtype=jnp.int32)   # (Nnodes,)
 
-        # Mechanical neighbors (mesh geometry)
+        # Build neighbor info for the spring regularization
         node_neighbor_index, node_neighbor_degree, node_neighbor_weight = build_node_neighbor_dense(
             elements_np,
             nodes_coord_np,
@@ -432,7 +396,7 @@ class Dic():
         self.node_neighbor_weight = jnp.asarray(node_neighbor_weight, dtype=jnp.float32)
 
 
-    # properties definition
+    # Cached mesh properties
     @property
     def node_coordinates(self):
         """Return nodal coordinates as a ``jax.numpy`` array."""
@@ -447,7 +411,7 @@ class Dic():
     def element_conectivity(self):
         """Return quadrilateral connectivity as ``jax.numpy`` indices."""
         quad_blocks = []
-        # meshio >=5 stores the blocks in ``cells``; concatenate all quad blocks.
+        # meshio >=5 stores quads inside ``cells``; gather and concatenate them.
         for cell_block in getattr(self.mesh, "cells", []):
             cell_type = getattr(cell_block, "type", "")
             if cell_type.startswith("quad"):
@@ -455,17 +419,14 @@ class Dic():
         if quad_blocks:
             conn = np.concatenate(quad_blocks, axis=0)
             return jnp.array(conn)
-        # fallback for older meshio versions where quads were not concatenated
+        # Backward compatibility for older meshio versions.
         cells_dict = getattr(self.mesh, "cells_dict", {})
         if isinstance(cells_dict, dict) and "quad" in cells_dict:
             return jnp.array(cells_dict["quad"])
         raise ValueError("No recognizable quadrilateral elements were found in the mesh.")
 
     def _compute_element_centers_binned(self):
-        """
-        Return the (x, y) center of each finite element in binned pixel coordinates.
-        The center is computed as the mean of the four node coordinates.
-        """
+        """Return element centers in binned pixel coordinates (average of four nodes)."""
         nodes = np.asarray(self.node_coordinates_binned[:, :2])
         elements = np.asarray(self.element_conectivity, dtype=int)
         elem_nodes = nodes[elements]          # shape: (Nelements, 4, 2)
@@ -482,24 +443,20 @@ class Dic():
     # API_CANDIDATE
     def get_mesh_as_triangulation(self, displacement=0.0):
         """Convert the quadrilateral mesh into a Matplotlib triangulation."""
-        # creat a triangulation of the mesh
-        # each quad element is divided into two triangles
-        # work only for 2d meshes
+        # Split each quad into two triangles for Matplotlib's 2D triangulation.
         from matplotlib.tri import Triangulation
         x, y = (self.node_coordinates[:,:2]+displacement).T
-        # creat connectivity for the triangulation by splitting each quad element into two triangles
         conn_tri = []
         for quad in self.element_conectivity:
             conn_tri.append([quad[0], quad[1], quad[2]])
             conn_tri.append([quad[0], quad[2], quad[3]])
         conn_tri = jnp.array(conn_tri)
-        # create the triangulation
         triangulation = Triangulation(x, y, conn_tri)
- 
+
         return triangulation
 
     def _read_mesh(self):
-        """Charge le maillage depuis le disque via ``meshio``."""
+        """Read the mesh file through ``meshio``."""
         self.mesh = meshio.read(self.mesh_path)
 
     def compute_green_lagrange_strain_nodes(
@@ -508,26 +465,10 @@ class Dic():
         k_ring=1,
         gauge_length=0.0,
     ):
-        """Compute nodal Green–Lagrange strains via local LSQ interpolation.
+        """Estimate nodal deformation gradients and Green–Lagrange strains via local LSQ fits.
 
-        Parameters
-        ----------
-        displacement : (Nnodes, 2)
-            Nodal displacement field (pixels).
-        k_ring : int, optional
-            Number of neighbor rings in the stencil (1 = immediate neighbors).
-        gauge_length : float, optional
-            Gauge length in same unit as ``node_coordinates_binned``.
-
-        Returns
-        -------
-        tuple of (F_all, E_all)
-            Nodal deformation gradient and Green–Lagrange tensors, shape (Nnodes, 2, 2).
-
-        Notes
-        -----
-        Builds a k-ring neighborhood, solves a least-squares fit of the displacement
-        gradient over the stencil, then forms ``F = I + grad u`` and ``E = 0.5*(F.T@F - I)``.
+        ``k_ring`` controls the neighborhood size; ``gauge_length`` uses the same units as ``node_coordinates_binned``.
+        Returns ``(F_all, E_all)`` each shaped ``(Nnodes, 2, 2)``.
         """
         nodes_np = np.asarray(self.node_coordinates_binned[:, :2])
         disp_binned = np.asarray(displacement) / float(self.binning)
@@ -568,66 +509,11 @@ class Dic():
         use_element_centers=False,
         element_stride=1,
     ):
-        """High-level initializer for large motions using sparse matches + smooth interpolation.
+        """Build a nodal displacement guess from sparse ZNCC matches before full DIC.
 
-        Recommended entry point to obtain a displacement guess for challenging,
-        non-affine motion before running the full DIC solver. Outliers are rejected
-        via local, neighborhood-based RANSAC; the global model is then estimated on
-        the retained inliers (no global RANSAC).
-
-        This routine extracts sparse patch correspondences robust to large displacements,
-        filters them inside the FE mesh footprint, rejects outliers with local RANSAC,
-        then builds a smooth displacement field by interpolating the inlier matches (RBF).
-        The interpolated field is evaluated at mesh nodes to provide a nodal initial
-        guess suitable for subsequent DIC refinement.
-
-        Parameters
-        ----------
-        im_ref, im_def : array-like
-            Reference and deformed images.
-        n_patches : int, optional
-            Target number of patch centers sampled across the image.
-        patch_win : int, optional
-            Patch size (odd) used for local ZNCC matching.
-        patch_search : int, optional
-            Half-width of the search window around the initial prediction.
-        ransac_model : {'affine', 'similarity'}, optional
-            Geometric model used only for outlier rejection/diagnostics.
-        refine : bool, optional
-            If True, perform a sub-pixel NCC refinement and shift the nodal guess
-            by the median offset of the refined inlier matches.
-        win : int, optional
-            Window size used for sub-pixel refinement.
-        search : int, optional
-            Half-width of the search area during sub-pixel refinement.
-        search_dilation : float, optional
-            Dilation (in pixels) applied to the mesh footprint when filtering patches.
-        use_element_centers : bool, optional
-            If True, perform one ZNCC match per (subsampled) finite element center
-            instead of automatically sampling textured patches.
-        element_stride : int, optional
-            Subsampling step applied to element centers (e.g., 2 keeps one center
-            every two elements).
-
-        Returns
-        -------
-        jnp.ndarray
-            Nodal displacement guess of shape ``(Nnodes, 2)``.
-        dict
-            Diagnostics including raw matches, inliers, scores, robust model, and
-            interpolator used to build the nodal guess.
-
-        Examples
-        --------
-        >>> disp_guess, extras = dic.compute_feature_disp_guess_big_motion(
-        ...     im_ref, im_def,
-        ...     n_patches=64,
-        ...     refine=True,
-        ...     patch_win=21,
-        ...     patch_search=51,
-        ...     search_dilation=1.0,
-        ... )
-        >>> u_dic, history = dic.run_dic(im_ref, im_def, disp_guess=disp_guess, save_history=True)
+        Samples textured patches (or element centers), filters them with local RANSAC,
+        interpolates inlier displacements with weighted RBFs, and optionally runs subpixel NCC.
+        Returns the nodal guess and a diagnostics dict (matches, scores, model, interpolator).
         """
         nodes = np.asarray(self.node_coordinates_binned[:, :2])
         elements = np.asarray(self.element_conectivity)
@@ -697,12 +583,12 @@ class Dic():
                 "Local RANSAC rejected all sparse matches; cannot build an initial field."
             )
 
-        # Estimate a global transform on the filtered inliers (deterministic LS fit).
+        # Fit the requested global transform on all inliers (plain least squares).
         model_robust = Model()
         model_robust.estimate(pts_ref_in, pts_def_in)
 
         if pts_ref_in.shape[0] < 3:
-            # Too few inliers: fall back to a constant displacement equal to the mean.
+            # Not enough inliers: keep a constant displacement equal to the mean.
             mean_disp = (pts_def_in - pts_ref_in).mean(axis=0)
 
             def interp_fn(xy):
@@ -710,7 +596,7 @@ class Dic():
                 return np.repeat(mean_disp[None, :], q.shape[0], axis=0)
 
         else:
-            # Smooth, possibly non-affine displacement field by weighted RBF interpolation.
+            # Otherwise interpolate the inlier field with a weighted RBF.
             disp_in = pts_def_in - pts_ref_in
             try:
                 interp_rbf = build_weighted_rbf_interpolator(
@@ -725,7 +611,7 @@ class Dic():
                     return np.asarray(interp_rbf(q))
 
             except Exception:
-                # Numerical failure in RBF → conservative constant model.
+                # If the RBF solve fails, revert to the mean displacement.
                 mean_disp = disp_in.mean(axis=0)
 
                 def interp_fn(xy):
@@ -766,48 +652,21 @@ class Dic():
                 reg_type="spring",
                 alpha_reg=0.1,
                 save_history=False):
-        """
-        Run global pixelwise DIC with optional Tikhonov regularization.
+        """Global pixelwise DIC solve on the mesh with optional spring regularization.
 
-        Parameters
-        ----------
-        im1, im2 : array-like
-            Reference and deformed images.
-        disp_guess : array-like, optional
-            Initial nodal displacement guess ``(Nnodes, 2)``.
-        max_iter : int
-            Maximum Conjugate Gradient iterations on the Gauss–Newton quadratic.
-        tol : float
-            Convergence tolerance on gradient norm.
-        reg_type : {'none', 'laplace', 'spring'}
-            Global regularization energy added to the image mismatch.
-        alpha_reg : float
-            Weight of the regularization term.
-        save_history : bool, optional
-            When True, store J/||grad|| pairs at every iteration (slower, more memory).
-
-        Returns
-        -------
-        displacement : np.ndarray
-            Optimized nodal displacement field.
-        history : list of (J, ||grad||) or None
-            Per-iteration objective and gradient norms if ``save_history`` is True.
-
-        Notes
-        -----
-        Minimizes ``0.5 * ||I2(x+u) - I1(x)||^2`` with optional smoothness
-        penalties (Laplace or spring-based) using a preconditioned CG loop on
-        the normal equations.
+        Accepts an optional nodal ``disp_guess`` and runs the jitted CG loop with the
+        provided ``max_iter``/``tol``; when ``save_history`` is True the (J, ||grad||)
+        history is returned alongside the optimized displacement.
         """
         nodes_coord = jnp.asarray(self.node_coordinates_binned[:, :2], dtype=jnp.float32)
 
         if disp_guess is None:
             displacement = jnp.zeros_like(nodes_coord, dtype=jnp.float32)
         else:
-            # ⚠ if binning != 1 we might need to revisit this division by self.binning
+            # TODO: revisit this scaling when binning differs from 1.
             displacement = jnp.asarray(disp_guess, dtype=jnp.float32) / jnp.float32(self.binning)
 
-        # Enforce float32 to avoid slow float64 execution.
+        # Stick to float32 for JAX performance.
         im1 = jnp.asarray(im1, dtype=jnp.float32)
         im2 = jnp.asarray(im2, dtype=jnp.float32)
         im1_T = jnp.transpose(im1, (1, 0))
@@ -849,38 +708,11 @@ class Dic():
         alpha_reg=0.0,
         max_step=0.2,
         omega_local=0.5):
-        """
-        Local nodal refinement with Gauss–Seidel sweeps and optional regularization.
+        """Local Gauss–Seidel nodal sweeps with optional spring regularization.
 
-        Parameters
-        ----------
-        im1, im2 : array-like
-            Reference and deformed images.
-        disp_init : array-like, optional
-            Initial nodal displacement.
-        n_sweeps : int
-            Number of Gauss–Seidel passes.
-        lam : float
-            Damping factor on the pixelwise Hessian.
-        reg_type : {'none', 'laplace', 'spring'}
-            Regularization flavour added to the pixel residual.
-        alpha_reg : float
-            Regularization weight (0 disables regularization).
-        max_step : float
-            Maximal step per node (pixels) for stability.
-        omega_local : float
-            Relaxation factor in the Gauss–Seidel update.
-
-        Returns
-        -------
-        np.ndarray
-            Refined nodal displacement.
-
-        Notes
-        -----
-        Performs in-place Gauss–Seidel updates on nodes using the pixelwise
-        residual gradient/Hessian (optionally damped by ``lam``), with either
-        pure image data, Laplacian, or spring-weighted smoothness terms.
+        Starts from ``disp_init`` (zeros if missing), damps the pixel Hessian with ``lam``,
+        limits each update by ``max_step``, and relaxes with ``omega_local`` while using
+        the spring neighborhood when ``reg_type == 'spring_jacobi'``.
         """
         nodes_coord = jnp.asarray(self.node_coordinates_binned[:, :2], dtype=jnp.float32)
         if disp_init is None:
@@ -893,7 +725,7 @@ class Dic():
         im1_T = jnp.transpose(im1, (1, 0))
         im2_T = jnp.transpose(im2, (1, 0))
 
-        # Precompute image-2 gradients once (NumPy)
+        # Precompute image-2 gradients once (NumPy).
         gx2_np, gy2_np = compute_image_gradient(np.asarray(im2))
         gx2_T = jnp.asarray(gx2_np.T, dtype=jnp.float32)
         gy2_T = jnp.asarray(gy2_np.T, dtype=jnp.float32)
@@ -927,28 +759,22 @@ class Dic():
                 omega=omega_local,
             )
 
-            print(f"[Nodal-{reg_type}] sweep {s+1}/{n_sweeps}, J={float(0.5*jnp.mean(r**2)):.4e}")
+            jax.debug.print(
+                "[Nodal-{}] sweep {}/{}, J={:.4e}",
+                reg_type,
+                s + 1,
+                n_sweeps,
+                0.5 * jnp.mean(r ** 2),
+            )
 
         displacement = displacement * self.binning
         return displacement
 
     def compute_q1_pixel_displacement_field(self, nodal_displacement):
-        """
-        Evaluate the Q1 displacement field pixel by pixel inside the ROI.
+        """Evaluate the Q1 nodal field at every ROI pixel and return ``(Ux_map, Uy_map)``.
 
-        Parameters
-        ----------
-        nodal_displacement : array-like, shape (Nnodes, 2)
-            Nodal field (Ux, Uy) used to interpolate the displacement within the
-            pixels of the reference image (after optional binning).
-
-        Returns
-        -------
-        tuple of ndarray
-            Two matrices ``(Ux_map, Uy_map)`` with the size of the processed
-            image, filled with ``NaN`` outside the ROI. Values are projected to
-            pixel positions in the deformed configuration to ease visualization
-            over the deformed image.
+        Requires ``precompute_pixel_data``; outputs match the image shape with NaNs outside
+        the ROI, and projected coordinates follow the deformed configuration for plotting.
         """
         if self._image_shape is None or self._roi_mask is None:
             raise RuntimeError(
@@ -971,7 +797,7 @@ class Dic():
         pixel_disp = jnp.sum(self.pixel_shapeN[..., None] * node_values, axis=1)
         pixel_disp_np = np.asarray(pixel_disp)
 
-        # Project pixel centers to the deformed configuration for visualization.
+        # Project pixel centers into the deformed configuration for plotting.
         pixel_coords_ref = np.asarray(self.pixel_coords_ref)
         pixel_coords_def = pixel_coords_ref + pixel_disp_np
 

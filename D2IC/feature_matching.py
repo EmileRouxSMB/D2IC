@@ -10,7 +10,7 @@ from skimage.util import view_as_windows
 
 
 def _points_in_mesh_area(points, mesh_nodes=None, mesh_elements=None, dilation: float = 0.0):
-    """Return mask of points located inside (or near) the FE mesh footprint."""
+    """Return a boolean mask marking points inside the FE mesh footprint (with optional dilation)."""
     if mesh_nodes is None or mesh_elements is None:
         return np.ones(points.shape[0], dtype=bool)
 
@@ -31,7 +31,7 @@ def _points_in_mesh_area(points, mesh_nodes=None, mesh_elements=None, dilation: 
 
 
 def refine_matches_ncc(I0, I1, pts0, pts1_pred, win: int = 31, search: int = 3):
-    """Refine correspondences using sub-pixel normalized cross-correlation."""
+    """Subpixel NCC refinement returning ``(dx, dy)`` corrections for each input match."""
     I0 = np.asarray(I0)
     I1 = np.asarray(I1)
     pts0 = np.asarray(pts0)
@@ -110,7 +110,7 @@ def local_ransac_outlier_filter(
     residual_threshold: float = 2.5,
     max_trials: int = 500,
 ) -> np.ndarray:
-    """Reject outliers via local RANSAC in spatial neighborhoods."""
+    """Mark inliers using localized RANSAC fits around each correspondence."""
     pts_ref = np.asarray(pts_ref, dtype=np.float64)
     pts_def = np.asarray(pts_def, dtype=np.float64)
     n = pts_ref.shape[0]

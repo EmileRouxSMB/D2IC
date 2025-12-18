@@ -11,7 +11,7 @@ from matplotlib.figure import Figure
 
 
 class DICPlotter:
-    """Plot displacement and strain fields using pixel-wise Q1 interpolation."""
+    """Project nodal fields onto the image grid and build quick overlay plots."""
 
     def __init__(
         self,
@@ -20,24 +20,10 @@ class DICPlotter:
         strain_fields: Optional[Union[Dict[str, np.ndarray], np.ndarray, Tuple[np.ndarray, np.ndarray]]] = None,
         dic_object: Optional[Any] = None,
     ) -> None:
-        """
-        Initialize the plotter with image, mesh, displacement, and optional strain fields.
+        """Store the reference image, nodal fields, and the DIC object driving interpolation.
 
-        Parameters
-        ----------
-        background_image:
-            2D array representing the background image (typically the deformed frame).
-        displacement:
-            Array of nodal displacements with shape (Nnodes, 2), columns ordered as [Ux, Uy].
-        strain_fields:
-            Optional mapping from strain field names to one-dimensional nodal arrays.
-            It can also be either:
-              - ``E_all`` tensor of shape (Nnodes, 2, 2) returned by ``compute_green_lagrange_strain_nodes``.
-              - A tuple ``(F_all, E_all)`` as returned by ``compute_green_lagrange_strain_nodes``.
-        dic_object:
-            DIC/FEM study object exposing ``compute_q1_pixel_displacement_field`` and
-            ``get_mesh_as_polyCollection``. The object must already have pixel data
-            precomputed via ``precompute_pixel_data``.
+        ``strain_fields`` accepts either a dict, an ``E_all`` tensor, or ``(F_all, E_all)``;
+        ``dic_object`` must already expose the precomputed pixel data.
         """
         self.background_image = background_image
         self.displacement = displacement
@@ -217,8 +203,8 @@ class DICPlotter:
 
         mask = weights > 0
         grid[mask] = accum[mask] / weights[mask]
-        # Sanity-check idea: compare this vectorized version against the former np.add.at loop
-        # on random coordinates and ensure max|diff| < 1e-6 to validate numerical equivalence.
+        # Optional check: compare this vectorized accumulation to the older np.add.at loop on random points.
+        # They should agree within ~1e-6.
         return grid
 
     def _init_figure_template(
@@ -228,7 +214,7 @@ class DICPlotter:
         image_alpha: float,
         plotmesh: bool,
     ) -> None:
-        """Figure template reused to avoid repeated Matplotlib allocations during batch export."""
+        """Lazily create the Matplotlib figure/canvas that hosts the overlays."""
         if hasattr(self, "_fig") and self._fig is not None:
             return
         fig, ax = plt.subplots(figsize=figsize)
@@ -304,20 +290,7 @@ class DICPlotter:
         figsize: Tuple[float, float] = (6.0, 6.0),
         plotmesh: bool = True,
     ) -> Tuple[Figure, Axes]:
-        """
-        Plot a single displacement component overlaid on the background image.
-
-        Parameters
-        ----------
-        component:
-            Either "Ux" or "Uy" to select the component to display.
-        image_alpha:
-            Transparency factor for the displacement field overlay.
-        cmap:
-            Matplotlib colormap name for the field.
-        figsize:
-            Figure size in inches as (width, height).
-        """
+        """Overlay ``Ux`` or ``Uy`` on the background image and return the Matplotlib handles."""
         label = self._latex_label(component, "displacement")
         field_map = self._get_component_map(component)
         return self._plot_field_overlay(field_map, label, cmap, image_alpha, figsize, plotmesh)

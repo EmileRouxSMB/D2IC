@@ -1,10 +1,7 @@
-"""Utilities to turn binary ROI images into quad meshes with the Gmsh API.
+"""Turn binary ROI masks into quad meshes through the Gmsh Python API.
 
-The previous version of this script dumped a ``.geo`` file straight from the
-OpenCV contours.  The module now exposes a small, documented helper class that
-keeps the flow explicit: read an ROI image, identify the white regions, build
-the corresponding Gmsh geometry and generate a recombined (quad-dominant)
-surface mesh.
+We read an ROI, extract white regions with OpenCV, rebuild the curve network,
+and let Gmsh recombine triangles into quads when requested.
 """
 
 from __future__ import annotations
@@ -20,30 +17,28 @@ import numpy as np
 
 @dataclass
 class RoiMeshConfig:
-    """Configuration container used by :class:`RoiMeshGenerator`.
+    """Holds the geometry/meshing knobs used by :class:`RoiMeshGenerator`.
 
     Attributes
     ----------
     image_path:
-        Path to the ROI image. White pixels define the meshed regions.
+        ROI image where white pixels mark the area to mesh.
     element_size:
-        Target element size passed to every generated point.
+        Target spacing assigned to all generated Gmsh points.
     threshold:
-        Pixels above this grayscale value are considered white.
+        Grayscale cutoff that separates foreground/background.
     approx_tolerance:
-        Relative tolerance used by ``cv2.approxPolyDP`` to simplify contours.
+        Relative tolerance passed to ``cv2.approxPolyDP``.
     recombine:
-        When ``True`` Gmsh recombines triangles into quads.
+        Let Gmsh recombine triangles into quads when ``True``.
     corner_angle_deg:
-        Threshold used to detect sharp corners (degrees from a straight angle).
+        Minimum deviation from a straight angle to treat a point as a corner.
     line_deviation_factor:
-        Maximum allowed deviation from the best fitting line expressed as a
-        fraction of ``element_size``.
+        Allowed offset from the best fitting line, relative to ``element_size``.
     arc_fit_tolerance:
-        Admissible root-mean-square deviation between samples and their best
-        fitting circle, expressed as a fraction of the circle radius.
+        Max RMS misfit between sampled points and their fitted circle (fraction of radius).
     min_arc_angle_deg:
-        Minimum angular span (in degrees) required to keep a circle arc.
+        Smallest arc span we keep when deciding between arcs and splines.
     """
 
     image_path: Path
@@ -58,7 +53,7 @@ class RoiMeshConfig:
 
 
 class _PointManager:
-    """Cache generated Gmsh points to keep the curve network watertight."""
+    """Caches Gmsh point tags so shared vertices stay consistent."""
 
     def __init__(self, element_size: float) -> None:
         self.element_size = element_size
@@ -83,7 +78,7 @@ class _PointManager:
 
 
 class RoiMeshGenerator:
-    """Create a quad mesh from a binary ROI image using the Gmsh Python API."""
+    """Builds a conforming quad-dominant mesh from a binary ROI mask."""
 
     def __init__(self, config: RoiMeshConfig) -> None:
         self.config = config
@@ -91,7 +86,7 @@ class RoiMeshGenerator:
         self._surface_tags: List[int] = []
 
     def generate(self, msh_path: Optional[Path] = None) -> Optional[Path]:
-        """Build the geometry, mesh it and optionally write a ``.msh`` file."""
+        """Run the full pipeline and optionally dump a ``.msh`` file."""
 
         gmsh.initialize()
         try:
@@ -113,7 +108,7 @@ class RoiMeshGenerator:
         finally:
             gmsh.finalize()
 
-    # ------------------------------------------------------------------
+    # Geometry assembly --------------------------------------------------
     def _build_geometry(self) -> None:
         self._curve_loops.clear()
         self._surface_tags.clear()
@@ -339,19 +334,9 @@ def generate_roi_mesh(
     msh_path: Optional[str] = None,
     approx_tolerance: float = 10.0e-3,
 ) -> Optional[Path]:
-    """Convenience wrapper for scripts or notebooks.
+    """One-shot helper: read ``image_path``, mesh white pixels, optionally save ``msh_path``.
 
-    Parameters
-    ----------
-    image_path:
-        ROI to read. White regions are meshed, black regions are ignored.
-    element_size:
-        Target element size passed to all generated points.
-    msh_path:
-        Optional output path, e.g. ``SandBox/roi.msh``.
-    approx_tolerance:
-        Relative tolerance forwarded to ``cv2.approxPolyDP`` when simplifying
-        contours (smaller values keep more segments).
+    ``element_size`` sets the target spacing; ``approx_tolerance`` goes to ``cv2.approxPolyDP``.
     """
 
     config = RoiMeshConfig(

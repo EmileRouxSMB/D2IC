@@ -1,6 +1,4 @@
-"""
-Utility functions for the tutorials and CLI scripts (visualization + pipelines).
-"""
+"""Helpers shared by tutorials and CLI scripts (plotting and pipelines)."""
 
 from __future__ import annotations
 
@@ -59,7 +57,7 @@ def plot_field(
     cmap: str = "jet",
     image_alpha: float = 0.6,
 ) -> None:
-    """Render a PNG of a displacement or strain component (Ux/Uy or Exx/Exy/Eyy)."""
+    """Render a PNG overlay for ``Ux``, ``Uy``, or any scalar strain component."""
     field_norm = field.strip().lower()
     if field_norm in {"ux", "uy"}:
         fig, _ = plotter.plot_displacement_component(field, image_alpha=image_alpha, cmap=cmap)
@@ -84,10 +82,10 @@ def run_dic_sequence(
     max_extrapolation: float = 5.0,
     per_frame_callback: Callable[[int, np.ndarray, dict], None] | None = None,
 ) -> Tuple[np.ndarray, List[dict]]:
-    """
-    Correlate the reference image ``im_ref`` against each image in ``images_def``.
-    Returns displacements and solver history for every frame.
-    An optional callback can run as soon as a frame is processed.
+    """Sequential DIC solve over ``images_def`` with optional velocity prediction and nodal sweeps.
+
+    Returns stacked displacements plus per-frame history dicts; ``per_frame_callback`` runs right after
+    each frame is processed.
     """
     n_frames = len(images_def)
     if n_frames == 0:
@@ -98,7 +96,7 @@ def run_dic_sequence(
     history_all: List[dict] = [{} for _ in range(n_frames)]
 
     def _limit_extrapolation(guess: np.ndarray, anchor: np.ndarray) -> np.ndarray:
-        """Limit the extrapolation step norm to keep the update robust."""
+        """Clamp the extrapolated guess so no node drifts more than ``max_extrapolation`` pixels."""
         delta = guess - anchor
         norms = np.linalg.norm(delta, axis=1)
         mask = norms > max_extrapolation
@@ -107,7 +105,7 @@ def run_dic_sequence(
             delta[mask] = delta[mask] * scale[:, None]
         return anchor + delta
 
-    # Frame 0: initialization via sparse correspondences
+    # Frame 0: initialize with sparse correspondences.
     disp_guess = disp_guess_first if disp_guess_first is not None else np.zeros((n_nodes, 2), dtype=np.float32)
     print("   [Frame 0] Global DIC with feature-based initial field")
     disp0, hist0 = dic.run_dic(
@@ -137,7 +135,7 @@ def run_dic_sequence(
     if per_frame_callback is not None:
         per_frame_callback(0, disp_all[0], history_all[0])
 
-    # Subsequent frames: propagation + optional velocity prediction
+    # Next frames: propagate previous solution and optionally extrapolate using velocity.
     for k in range(1, n_frames):
         print(f"   [Frame {k}] Propagating the previous displacement")
         disp_guess = np.asarray(disp_all[k - 1])
@@ -196,13 +194,9 @@ def run_pipeline_sequence(
     plot_cmap: str,
     plot_alpha: float,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Linear pipeline: load images, mesh the ROI, run sequential DIC, then export results.
+    """End-to-end pipeline: load data, mesh the ROI, run sequential DIC, and export fields/plots.
 
-    Returns
-    -------
-        - disp_all : displacements (N_frames, N_nodes, 2)
-        - E_all_seq : Green–Lagrange strains (N_frames, N_nodes, 2, 2)
+    Returns ``(disp_all, E_all_seq)`` with shapes ``(N_frames, N_nodes, 2)`` and ``(N_frames, N_nodes, 2, 2)``.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
