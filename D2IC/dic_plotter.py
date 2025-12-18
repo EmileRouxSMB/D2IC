@@ -182,10 +182,19 @@ class DICPlotter:
         if pixel_values.size == 0:
             return grid
 
-        accum = np.zeros((H, W), dtype=pixel_values.dtype)
-        weights = np.zeros((H, W), dtype=np.float64)
+        accum_flat = np.zeros(H * W, dtype=pixel_values.dtype)
+        weight_flat = np.zeros(H * W, dtype=np.float64)
 
-        def add(di: int, dj: int, w: np.ndarray) -> None:
+        fx = self._pixel_fx
+        fy = self._pixel_fy
+        contributions = (
+            ((1.0 - fx) * (1.0 - fy), 0, 0),
+            (fx * (1.0 - fy), 0, 1),
+            ((1.0 - fx) * fy, 1, 0),
+            (fx * fy, 1, 1),
+        )
+
+        for weights_loc, di, dj in contributions:
             i_idx = self._pixel_i0 + di
             j_idx = self._pixel_j0 + dj
             mask = (
@@ -193,23 +202,56 @@ class DICPlotter:
                 & (i_idx < H)
                 & (j_idx >= 0)
                 & (j_idx < W)
-                & (w > 0)
+                & (weights_loc > 0)
             )
             if not np.any(mask):
-                return
-            np.add.at(accum, (i_idx[mask], j_idx[mask]), pixel_values[mask] * w[mask])
-            np.add.at(weights, (i_idx[mask], j_idx[mask]), w[mask])
+                continue
+            idx_flat = (i_idx[mask] * W + j_idx[mask]).astype(np.int64, copy=False)
+            w = weights_loc[mask]
+            weighted_vals = pixel_values[mask] * w
+            accum_flat += np.bincount(idx_flat, weights=weighted_vals, minlength=H * W)
+            weight_flat += np.bincount(idx_flat, weights=w, minlength=H * W)
 
-        fx = self._pixel_fx
-        fy = self._pixel_fy
-        add(0, 0, (1.0 - fx) * (1.0 - fy))
-        add(0, 1, fx * (1.0 - fy))
-        add(1, 0, (1.0 - fx) * fy)
-        add(1, 1, fx * fy)
+        accum = accum_flat.reshape(H, W)
+        weights = weight_flat.reshape(H, W)
 
         mask = weights > 0
         grid[mask] = accum[mask] / weights[mask]
+        # Sanity-check idea: compare this vectorized version against the former np.add.at loop
+        # on random coordinates and ensure max|diff| < 1e-6 to validate numerical equivalence.
         return grid
+
+    def _init_figure_template(
+        self,
+        figsize: Tuple[float, float],
+        cmap: str,
+        image_alpha: float,
+        plotmesh: bool,
+    ) -> None:
+        """Figure template reused to avoid repeated Matplotlib allocations during batch export."""
+        if hasattr(self, "_fig") and self._fig is not None:
+            return
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.imshow(self.background_image, cmap="gray", origin="lower", alpha=1.0)
+        placeholder = np.zeros_like(self.background_image, dtype=float)
+        overlay = ax.imshow(
+            placeholder,
+            cmap=cmap,
+            origin="lower",
+            alpha=image_alpha,
+        )
+        colorbar = fig.colorbar(overlay, ax=ax, label="")
+        quad_mesh = None
+        if plotmesh:
+            quad_mesh = self._quad_mesh_collection()
+            if quad_mesh is not None:
+                ax.add_collection(quad_mesh)
+        ax.set_aspect("equal")
+        self._fig = fig
+        self._ax = ax
+        self._overlay_im = overlay
+        self._colorbar = colorbar
+        self._quad_mesh = quad_mesh
 
     def _plot_field_overlay(
         self,
@@ -220,18 +262,20 @@ class DICPlotter:
         figsize: Tuple[float, float],
         plotmesh: bool,
     ) -> Tuple[Figure, Axes]:
-        fig, ax = plt.subplots(figsize=figsize)
-        ax.imshow(self.background_image, cmap="gray", origin="lower", alpha=1.0)
+        self._init_figure_template(figsize, cmap, image_alpha, plotmesh)
         masked = np.ma.array(field_map, mask=~np.isfinite(field_map))
-        mesh = ax.imshow(masked, cmap=cmap, origin="lower", alpha=image_alpha)
-        if plotmesh:
-            quad_mesh = self._quad_mesh_collection()
-            if quad_mesh is not None:
-                ax.add_collection(quad_mesh)
-        ax.set_aspect("equal")
-        ax.set_title(label)
-        fig.colorbar(mesh, ax=ax, label=label)
-        return fig, ax
+        self._overlay_im.set_data(masked)
+        self._overlay_im.set_alpha(image_alpha)
+        self._overlay_im.set_cmap(cmap)
+        if masked.count() > 0:
+            vmin = masked.min()
+            vmax = masked.max()
+            if vmin != vmax:
+                self._overlay_im.set_clim(vmin=float(vmin), vmax=float(vmax))
+        self._colorbar.set_label(label)
+        self._colorbar.update_normal(self._overlay_im)
+        self._ax.set_title(label)
+        return self._fig, self._ax
 
     @staticmethod
     def _latex_label(name: str, field_type: str) -> str:

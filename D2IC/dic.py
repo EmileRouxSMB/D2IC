@@ -1,8 +1,9 @@
 """Digital Image Correlation utilities built on top of D2IC."""
 
+import jax
 import jax.numpy as jnp
-from jax import jit, value_and_grad
 import numpy as np
+from typing import NamedTuple
 from matplotlib.collections import PolyCollection
 from skimage.transform import AffineTransform, SimilarityTransform
 
@@ -86,6 +87,234 @@ def build_weighted_rbf_interpolator(x, u, w, smoothing=1e-3):
     return interp
 
 
+def J_total(
+    disp,
+    im1_T,
+    im2_T,
+    pixel_coords_ref,
+    pixel_nodes,
+    pixel_shapeN,
+    node_neighbor_index,
+    node_neighbor_degree,
+    node_neighbor_weight,
+    alpha_reg,
+):
+    """Total energy: image mismatch plus optional spring regularization."""
+    J_img = J_pixelwise_core(
+        disp,
+        im1_T,
+        im2_T,
+        pixel_coords_ref,
+        pixel_nodes,
+        pixel_shapeN,
+    )
+
+    def add_reg(J_val):
+        J_reg = reg_energy_spring_global(
+            disp,
+            node_neighbor_index,
+            node_neighbor_degree,
+            node_neighbor_weight,
+        )
+        return J_val + alpha_reg * J_reg
+
+    return jax.lax.cond(
+        alpha_reg == 0.0,
+        lambda J_val: J_val,
+        add_reg,
+        J_img,
+    )
+
+_J_TOTAL_VG = jax.value_and_grad(J_total)
+
+
+class _CGState(NamedTuple):
+    k: jnp.ndarray
+    displacement: jnp.ndarray
+    direction: jnp.ndarray
+    g_prev: jnp.ndarray
+    first: jnp.ndarray
+    history: jnp.ndarray
+    run: jnp.ndarray
+    last_J: jnp.ndarray
+    last_grad_norm: jnp.ndarray
+
+
+def _cg_solve(
+    disp0,
+    im1_T,
+    im2_T,
+    pixel_coords_ref,
+    pixel_nodes,
+    pixel_shapeN,
+    node_neighbor_index,
+    node_neighbor_degree,
+    node_neighbor_weight,
+    alpha_reg,
+    max_iter,
+    tol,
+    save_history,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """CG loop moved to lax.while_loop and jitted for performance."""
+    save_history = bool(save_history)
+    disp0 = jnp.asarray(disp0, dtype=jnp.float32)
+    tol = jnp.asarray(tol, dtype=jnp.float32)
+    alpha_reg = jnp.asarray(alpha_reg, dtype=jnp.float32)
+    max_iter_int = int(max_iter)
+    max_iter = jnp.int32(max_iter_int)
+
+    objective_args = (
+        im1_T,
+        im2_T,
+        pixel_coords_ref,
+        pixel_nodes,
+        pixel_shapeN,
+        node_neighbor_index,
+        node_neighbor_degree,
+        node_neighbor_weight,
+    )
+
+    history = (
+        jnp.zeros((max_iter_int, 2), dtype=jnp.float32)
+        if save_history
+        else jnp.zeros((0, 2), dtype=jnp.float32)
+    )
+    zero_disp = jnp.zeros_like(disp0)
+    init_state = _CGState(
+        k=jnp.int32(0),
+        displacement=disp0,
+        direction=zero_disp,
+        g_prev=zero_disp,
+        first=jnp.bool_(True),
+        history=history,
+        run=jnp.bool_(True),
+        last_J=jnp.float32(0.0),
+        last_grad_norm=jnp.float32(jnp.inf),
+    )
+    c_armijo = jnp.float32(1e-4)
+
+    def cond_fun(state):
+        return jnp.logical_and(state.k < max_iter, state.run)
+
+    def body_fun(state):
+        J_val, grad = _J_TOTAL_VG(
+            state.displacement,
+            *objective_args,
+            alpha_reg,
+        )
+        grad_norm = jnp.linalg.norm(grad)
+        if save_history:
+            history = state.history.at[state.k].set(
+                jnp.asarray([J_val, grad_norm], dtype=jnp.float32)
+            )
+        else:
+            history = state.history
+        stop = grad_norm < tol
+
+        def stop_branch(_):
+            return state._replace(
+                k=state.k + jnp.int32(1),
+                history=history,
+                run=jnp.bool_(False),
+                last_J=J_val,
+                last_grad_norm=grad_norm,
+                g_prev=grad,
+            )
+
+        def continue_branch(_):
+            def dir_first(_):
+                return -grad
+
+            def dir_conjugate(_):
+                num = jnp.sum(grad * (grad - state.g_prev))
+                den = jnp.sum(state.g_prev * state.g_prev) + jnp.float32(1e-16)
+                beta = jnp.maximum(num / den, jnp.float32(0.0))
+                return -grad + beta * state.direction
+
+            direction = jax.lax.cond(
+                state.first,
+                dir_first,
+                dir_conjugate,
+                operand=None,
+            )
+            gd = jnp.sum(grad * direction)
+
+            def restart_direction(_):
+                return -grad, -jnp.sum(grad * grad)
+
+            direction, gd = jax.lax.cond(
+                gd >= 0,
+                restart_direction,
+                lambda _: (direction, gd),
+                operand=None,
+            )
+
+            def ls_body(i, carry):
+                alpha, J_candidate, done = carry
+
+                def compute_step(_):
+                    candidate_disp = state.displacement + alpha * direction
+                    J_candidate = J_total(
+                        candidate_disp,
+                        *objective_args,
+                        alpha_reg,
+                    )
+                    satisfies = J_candidate <= J_val + c_armijo * alpha * gd
+                    alpha_next = jnp.where(
+                        satisfies,
+                        alpha,
+                        alpha * jnp.float32(0.5),
+                    )
+                    return alpha_next, J_candidate, satisfies
+
+                alpha_next, J_candidate_next, satisfies = jax.lax.cond(
+                    done,
+                    lambda _: (alpha, J_candidate, jnp.bool_(True)),
+                    compute_step,
+                    operand=None,
+                )
+                done_next = jnp.logical_or(done, satisfies)
+                return alpha_next, J_candidate_next, done_next
+
+            alpha_init = jnp.float32(1.0)
+            alpha_final, _, _ = jax.lax.fori_loop(
+                0,
+                10,
+                ls_body,
+                (alpha_init, J_val, jnp.bool_(False)),
+            )
+            displacement_new = state.displacement + alpha_final * direction
+            return state._replace(
+                k=state.k + jnp.int32(1),
+                displacement=displacement_new,
+                direction=direction,
+                g_prev=grad,
+                first=jnp.bool_(False),
+                history=history,
+                run=jnp.bool_(True),
+                last_J=J_val,
+                last_grad_norm=grad_norm,
+            )
+
+        new_state = jax.lax.cond(
+            stop,
+            stop_branch,
+            continue_branch,
+            operand=None,
+        )
+        return new_state
+
+    final_state = jax.lax.while_loop(cond_fun, body_fun, init_state)
+    history_out = final_state.history if save_history else jnp.zeros((0, 2), dtype=jnp.float32)
+    return (
+        final_state.displacement,
+        history_out,
+        final_state.k,
+        final_state.last_J,
+        final_state.last_grad_norm,
+    )
+
+
 class Dic():
     """Pixelwise DIC solver built on a quadrilateral mesh."""
 
@@ -106,6 +335,13 @@ class Dic():
         self._image_shape = None
         self._roi_mask = None
         self._roi_flat_indices = None
+        # Avoids retracing/recompilation across frames by preventing closure capture and by reusing a stable jitted function.
+        # Donate the displacement buffer to reduce large GPU allocations each solve.
+        self._solve_jit = jax.jit(
+            _cg_solve,
+            static_argnums=(10, 12),
+            donate_argnums=(0,),
+        )
     
     def __repr__(self):
         """String representation of the Dic object."""
@@ -150,12 +386,12 @@ class Dic():
         # 2) Mesh data (NumPy + JAX views)
         nodes_coord_np = np.asarray(self.node_coordinates_binned[:, :2])
         elements_np = np.asarray(self.element_conectivity)
-        nodes_coord_jax = jnp.asarray(nodes_coord_np)
+        nodes_coord_jax = jnp.asarray(nodes_coord_np, dtype=jnp.float32)
 
         pixel_elts_np, pixel_nodes_np = build_pixel_to_element_mapping_numpy(
             pixel_coords, nodes_coord_np, elements_np
         )
-        pixel_coords_jax = jnp.asarray(pixel_coords)
+        pixel_coords_jax = jnp.asarray(pixel_coords, dtype=jnp.float32)
         pixel_nodes_jax = jnp.asarray(pixel_nodes_np, dtype=jnp.int32)
         pixel_elts = jnp.asarray(pixel_elts_np, dtype=jnp.int32)
 
@@ -164,10 +400,12 @@ class Dic():
             pixel_nodes_jax,
             nodes_coord_jax
         )
+        pixel_N_jax = jnp.asarray(pixel_N_jax, dtype=jnp.float32)
+        xi_eta = jnp.asarray(xi_eta, dtype=jnp.float32)
 
         # 4) Store
         self.pixel_coords_ref = pixel_coords_jax      # (Np,2)
-        self.pixel_elts = jnp.asarray(pixel_elts)     # (Np,)
+        self.pixel_elts = pixel_elts                  # (Np,)
         self.pixel_nodes = pixel_nodes_jax            # (Np,4)
         self.pixel_shapeN = pixel_N_jax               # (Np,4)
         self.pixel_xi_eta = xi_eta                    # optionnel
@@ -389,7 +627,7 @@ class Dic():
         ...     patch_search=51,
         ...     search_dilation=1.0,
         ... )
-        >>> u_dic, history = dic.run_dic(im_ref, im_def, disp_guess=disp_guess)
+        >>> u_dic, history = dic.run_dic(im_ref, im_def, disp_guess=disp_guess, save_history=True)
         """
         nodes = np.asarray(self.node_coordinates_binned[:, :2])
         elements = np.asarray(self.element_conectivity)
@@ -526,7 +764,8 @@ class Dic():
                 max_iter=50,
                 tol=1e-3,
                 reg_type="spring",
-                alpha_reg=0.1):
+                alpha_reg=0.1,
+                save_history=False):
         """
         Run global pixelwise DIC with optional Tikhonov regularization.
 
@@ -544,13 +783,15 @@ class Dic():
             Global regularization energy added to the image mismatch.
         alpha_reg : float
             Weight of the regularization term.
+        save_history : bool, optional
+            When True, store J/||grad|| pairs at every iteration (slower, more memory).
 
         Returns
         -------
         displacement : np.ndarray
             Optimized nodal displacement field.
-        history : list of (J, ||grad||)
-            Per-iteration objective and gradient norms.
+        history : list of (J, ||grad||) or None
+            Per-iteration objective and gradient norms if ``save_history`` is True.
 
         Notes
         -----
@@ -558,100 +799,47 @@ class Dic():
         penalties (Laplace or spring-based) using a preconditioned CG loop on
         the normal equations.
         """
-        nodes_coord = jnp.asarray(self.node_coordinates_binned[:, :2])
+        nodes_coord = jnp.asarray(self.node_coordinates_binned[:, :2], dtype=jnp.float32)
 
         if disp_guess is None:
-            displacement = jnp.zeros_like(nodes_coord)
+            displacement = jnp.zeros_like(nodes_coord, dtype=jnp.float32)
         else:
             # ⚠ if binning != 1 we might need to revisit this division by self.binning
-            displacement = jnp.asarray(disp_guess) / self.binning
+            displacement = jnp.asarray(disp_guess, dtype=jnp.float32) / jnp.float32(self.binning)
 
-        im1 = jnp.asarray(im1)
-        im2 = jnp.asarray(im2)
+        # Enforce float32 to avoid slow float64 execution.
+        im1 = jnp.asarray(im1, dtype=jnp.float32)
+        im2 = jnp.asarray(im2, dtype=jnp.float32)
+        im1_T = jnp.transpose(im1, (1, 0))
+        im2_T = jnp.transpose(im2, (1, 0))
 
         if reg_type != "spring":
             raise ValueError(f"Unsupported reg_type '{reg_type}' (supported: 'spring').")
 
-        def J_wrapper(disp):
-            J_img = J_pixelwise_core(
-                disp,
-                im1, im2,
-                self.pixel_coords_ref,
-                self.pixel_nodes,
-                self.pixel_shapeN,
-            )
-            if alpha_reg == 0.0:
-                return J_img
-            J_reg = reg_energy_spring_global(
-                disp,
-                self.node_neighbor_index,
-                self.node_neighbor_degree,
-                self.node_neighbor_weight,
-            )
-            return J_img + alpha_reg * J_reg
+        max_iter = int(max_iter)
+        disp_sol, history_arr, iterations, _, _ = self._solve_jit(
+            displacement,
+            im1_T,
+            im2_T,
+            self.pixel_coords_ref,
+            self.pixel_nodes,
+            self.pixel_shapeN,
+            self.node_neighbor_index,
+            self.node_neighbor_degree,
+            self.node_neighbor_weight,
+            alpha_reg,
+            max_iter,
+            tol,
+            save_history,
+        )
 
-        J_wrapper_jit = jit(J_wrapper)
-        J_val_and_grad = jit(value_and_grad(J_wrapper))
-
-
-        # ---- CG initialization ----
-        d = jnp.zeros_like(displacement)
-        g_prev = jnp.zeros_like(displacement)
-        first = True
-
-        history = []
-
-        for k in range(max_iter):
-            J_val, g = J_val_and_grad(displacement)
-            grad_norm = float(jnp.linalg.norm(g))
-            J_val_float = float(J_val)
-            history.append((J_val_float, grad_norm))
-
-            print(f"[CG] iter {k:3d}  J={J_val_float:.4e}  ||g||={grad_norm:.3e}")
-
-            # stopping criterion
-            if grad_norm < tol:
-                print(f"[CG] converged at iteration {k}, ||grad|| = {grad_norm:.3e}")
-                break
-
-            # ---- direction computation ----
-            if first:
-                d = -g
-                first = False
-            else:
-                num = jnp.sum(g * (g - g_prev))
-                den = jnp.sum(g_prev * g_prev) + 1e-16
-                beta = jnp.maximum(num / den, 0.0)
-                d = -g + beta * d
-
-            # gradient·direction dot product
-            gd = jnp.sum(g * d)
-
-            # ⚠ restart when the direction is not descending
-            if gd >= 0:
-                d = -g
-                gd = -jnp.sum(g * g)
-
-            gd_float = float(gd)
-
-            # ---- Armijo backtracking ----
-            alpha = 1.0
-            c = 1e-4
-
-            for _ in range(10):
-                new_disp = displacement + alpha * d
-                J_new = float(J_wrapper_jit(new_disp))
-                if J_new <= J_val_float + c * alpha * gd_float:
-                    break
-                alpha *= 0.5
-
-            displacement = displacement + alpha * d
-            g_prev = g
-
-            print(f"        alpha={alpha:.3e}, J_new={J_new:.4e}")
-
-        displacement = displacement * self.binning
-        return displacement, history
+        disp_sol = disp_sol * jnp.asarray(self.binning, dtype=jnp.float32)
+        iterations = int(iterations)
+        history = None
+        if save_history:
+            history_np = np.asarray(history_arr[:iterations])
+            history = [(float(val[0]), float(val[1])) for val in history_np]
+        return disp_sol, history
 
     def run_dic_nodal(self, im1, im2,
                       disp_init=None,
@@ -694,19 +882,21 @@ class Dic():
         residual gradient/Hessian (optionally damped by ``lam``), with either
         pure image data, Laplacian, or spring-weighted smoothness terms.
         """
-        nodes_coord = jnp.asarray(self.node_coordinates_binned[:, :2])
+        nodes_coord = jnp.asarray(self.node_coordinates_binned[:, :2], dtype=jnp.float32)
         if disp_init is None:
-            displacement = jnp.zeros_like(nodes_coord)
+            displacement = jnp.zeros_like(nodes_coord, dtype=jnp.float32)
         else:
-            displacement = jnp.asarray(disp_init) / self.binning
+            displacement = jnp.asarray(disp_init, dtype=jnp.float32) / jnp.float32(self.binning)
 
-        im1 = jnp.asarray(im1)
-        im2 = jnp.asarray(im2)
+        im1 = jnp.asarray(im1, dtype=jnp.float32)
+        im2 = jnp.asarray(im2, dtype=jnp.float32)
+        im1_T = jnp.transpose(im1, (1, 0))
+        im2_T = jnp.transpose(im2, (1, 0))
 
         # Precompute image-2 gradients once (NumPy)
         gx2_np, gy2_np = compute_image_gradient(np.asarray(im2))
-        gx2 = jnp.asarray(gx2_np)
-        gy2 = jnp.asarray(gy2_np)
+        gx2_T = jnp.asarray(gx2_np.T, dtype=jnp.float32)
+        gy2_T = jnp.asarray(gy2_np.T, dtype=jnp.float32)
 
         if reg_type != "spring_jacobi":
             raise ValueError(f"Unsupported reg_type '{reg_type}' (supported: 'spring_jacobi').")
@@ -714,11 +904,11 @@ class Dic():
         for s in range(n_sweeps):
             r, _x_def, gx_def, gy_def = compute_pixel_state(
                 displacement,
-                im1, im2,
+                im1_T, im2_T,
                 self.pixel_coords_ref,
                 self.pixel_nodes,
                 self.pixel_shapeN,
-                gx2, gy2,
+                gx2_T, gy2_T,
             )
 
             displacement = jacobi_nodal_step_spring(

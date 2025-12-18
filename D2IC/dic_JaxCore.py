@@ -291,20 +291,20 @@ def compute_pixel_shape_functions_jax(pixel_coords,
 
 @jit
 def residuals_pixelwise_core(displacement,
-                             im1, im2,
+                             im1_T, im2_T,
                              pixel_coords,
                              pixel_nodes,
                              pixel_shapeN):
     """
     displacement : (Nnodes,2)
-    im1, im2     : (H,W)
+    im1_T, im2_T : (W,H) inputs pre-transposed once outside the loop
     pixel_coords : (Np,2)
     pixel_nodes  : (Np,4)
     pixel_shapeN : (Np,4)
     """
     disp = jnp.asarray(displacement)
-    im1 = jnp.asarray(im1)
-    im2 = jnp.asarray(im2)
+    im1_T = jnp.asarray(im1_T)
+    im2_T = jnp.asarray(im2_T)
 
     # (Np,4,1)
     shapeN = pixel_shapeN[..., None]
@@ -318,21 +318,21 @@ def residuals_pixelwise_core(displacement,
     x_ref = pixel_coords                    # (Np,2)
     x_def = x_ref + u_pix                   # (Np,2)
 
-    # image interpolation (note: im.T just like in the existing code)
-    I1 = flat_nd_linear_interpolate(im1.T, x_ref.T)  # (Np,)
-    I2 = flat_nd_linear_interpolate(im2.T, x_def.T)  # (Np,)
+    # Transposes hoisted out of the hot loop for better GPU fusion.
+    I1 = flat_nd_linear_interpolate(im1_T, x_ref.T)  # (Np,)
+    I2 = flat_nd_linear_interpolate(im2_T, x_def.T)  # (Np,)
 
     return I2 - I1                           # (Np,)
 
 
 @jit
 def J_pixelwise_core(displacement,
-                     im1, im2,
+                     im1_T, im2_T,
                      pixel_coords,
                      pixel_nodes,
                      pixel_shapeN):
     r = residuals_pixelwise_core(displacement,
-                                 im1, im2,
+                                 im1_T, im2_T,
                                  pixel_coords,
                                  pixel_nodes,
                                  pixel_shapeN)
@@ -385,18 +385,18 @@ def build_node_pixel_dense(pixel_nodes, pixel_shapeN, n_nodes):
 
 @jax.jit
 def compute_pixel_state(displacement,
-                        im1, im2,
+                        im1_T, im2_T,
                         pixel_coords,
                         pixel_nodes,
                         pixel_shapeN,
-                        gradx2, grady2):
+                        gradx2_T, grady2_T):
     """
     displacement : (Nnodes,2)
-    im1, im2     : (H,W)
+    im1_T, im2_T : (W,H) inputs pre-transposed once outside the loop
     pixel_coords : (Np,2)
     pixel_nodes  : (Np,4)
     pixel_shapeN : (Np,4)
-    gradx2, grady2 : (H,W) gradients of I2 on the pixel grid
+    gradx2_T, grady2_T : (W,H) gradients of I2 on the pixel grid (transposed once)
 
     Returns
     -------
@@ -412,12 +412,12 @@ def compute_pixel_state(displacement,
     x_ref = pixel_coords
     x_def = x_ref + u_pix
 
-    I1 = flat_nd_linear_interpolate(im1.T, x_ref.T)
-    I2 = flat_nd_linear_interpolate(im2.T, x_def.T)
+    I1 = flat_nd_linear_interpolate(im1_T, x_ref.T)
+    I2 = flat_nd_linear_interpolate(im2_T, x_def.T)
 
     # gradients of image 2 interpolated at x_def
-    gx_def = flat_nd_linear_interpolate(gradx2.T, x_def.T)
-    gy_def = flat_nd_linear_interpolate(grady2.T, x_def.T)
+    gx_def = flat_nd_linear_interpolate(gradx2_T, x_def.T)
+    gy_def = flat_nd_linear_interpolate(grady2_T, x_def.T)
 
     r = I2 - I1
 

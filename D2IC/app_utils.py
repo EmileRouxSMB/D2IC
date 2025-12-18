@@ -118,6 +118,7 @@ def run_dic_sequence(
         tol=tol,
         reg_type=reg_type,
         alpha_reg=alpha_reg,
+        save_history=True,
     )
     if n_sweeps_local > 0:
         disp0 = dic.run_dic_nodal(
@@ -153,6 +154,7 @@ def run_dic_sequence(
             tol=tol,
             reg_type=reg_type,
             alpha_reg=alpha_reg,
+            save_history=True,
         )
         if n_sweeps_local > 0:
             disp_k = dic.run_dic_nodal(
@@ -235,7 +237,7 @@ def run_pipeline_sequence(
 
     print("3) Create the Dic object and precompute pixel data")
     dic = Dic(mesh_path=str(mesh_path))
-    dic.precompute_pixel_data(jnp.asarray(im_ref))
+    dic.precompute_pixel_data(jnp.asarray(im_ref, dtype=jnp.float32))
     n_nodes = int(dic.node_coordinates.shape[0])
     print(f"   - Number of nodes: {n_nodes}")
 
@@ -267,7 +269,7 @@ def run_pipeline_sequence(
     print(f"   - Frames selected for visualization: {frames_to_plot_arr}")
 
     print("6) Progressive post-processing: calculations + exports on the fly")
-    F_all_seq = np.zeros((n_frames, n_nodes, 2, 2), dtype=np.float64)
+    F_all_seq = np.zeros((n_frames, n_nodes, 2, 2), dtype=np.float32)
     E_all_seq = np.zeros_like(F_all_seq)
     frame_fields_dir = out_dir / "per_frame_fields"
     frame_fields_dir.mkdir(parents=True, exist_ok=True)
@@ -354,7 +356,11 @@ def run_pipeline_sequence(
         per_frame_callback=_export_frame_results,
     )
     print(f"   - Sequence processed: {disp_all.shape[0]} frames")
-    print(f"   - Last J={history_all[-1]['history'][-1][0]:.3e}, ||grad||={history_all[-1]['history'][-1][1]:.3e}")
+    last_hist = history_all[-1].get("history")
+    if last_hist:
+        print(f"   - Last J={last_hist[-1][0]:.3e}, ||grad||={last_hist[-1][1]:.3e}")
+    else:
+        print("   - Solver history disabled for performance.")
     print(f"   - Fields computed: F_all {F_all_seq.shape}, E_all {E_all_seq.shape}")
     print(f"   - Per-frame saves: {frame_fields_dir}")
 
