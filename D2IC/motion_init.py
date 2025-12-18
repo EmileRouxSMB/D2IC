@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Optional
 
 import numpy as np
 from skimage.color import rgb2gray
@@ -35,7 +36,9 @@ def phase_corr_shift(I0: np.ndarray, I1: np.ndarray, eps: float = 1e-12, subpix:
     return np.array([-dx, -dy], dtype=np.float64)
 
 
-def rotation_scale_logpolar(I0: np.ndarray, I1: np.ndarray, center: tuple[float, float] | None = None) -> tuple[float, float]:
+def rotation_scale_logpolar(
+    I0: np.ndarray, I1: np.ndarray, center: Optional[tuple[float, float]] = None
+) -> tuple[float, float]:
     """Estimate rotation (rad) and scale using a log-polar remap plus phase correlation.
 
     The polar center defaults to the image center unless ``center`` is provided.
@@ -81,8 +84,14 @@ def select_patch_centers(I: np.ndarray, K: int = 16, min_dist: int = 32) -> np.n
     pts = np.array([(float(x), float(y)) for y, x in chosen], dtype=np.float64)
     return pts
 
-
-) -> tuple[np.ndarray, float] | None:
+def match_patch_zncc(
+    I0: np.ndarray,
+    I1: np.ndarray,
+    p: np.ndarray,
+    win: int = 41,
+    search: int = 24,
+    pred: tuple[float, float] = (0.0, 0.0),
+) -> Optional[tuple[np.ndarray, float]]:
     """ZNCC patch matcher returning ``(dx, dy)`` and the best score, or ``None`` when invalid."""
     I0g = _ensure_gray_float(I0)
     I1g = _ensure_gray_float(I1)
