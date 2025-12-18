@@ -138,11 +138,11 @@ def _cg_solve(
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Conjugate-gradient loop expressed as a jitted ``lax.while_loop``."""
     save_history = bool(save_history)
-    disp0 = jnp.asarray(disp0, dtype=jnp.float32)
-    tol = jnp.asarray(tol, dtype=jnp.float32)
-    alpha_reg = jnp.asarray(alpha_reg, dtype=jnp.float32)
+    disp0 = jnp.asarray(disp0)
+    tol = jnp.asarray(tol)
+    alpha_reg = jnp.asarray(alpha_reg)
     max_iter_int = int(max_iter)
-    max_iter = jnp.int32(max_iter_int)
+    max_iter = jnp.asarray(max_iter_int)
 
     objective_args = (
         im1_T,
@@ -156,23 +156,23 @@ def _cg_solve(
     )
 
     history = (
-        jnp.zeros((max_iter_int, 2), dtype=jnp.float32)
+        jnp.zeros((max_iter_int, 2))
         if save_history
-        else jnp.zeros((0, 2), dtype=jnp.float32)
+        else jnp.zeros((0, 2))
     )
     zero_disp = jnp.zeros_like(disp0)
     init_state = _CGState(
-        k=jnp.int32(0),
+        k=jnp.array(0),
         displacement=disp0,
         direction=zero_disp,
         g_prev=zero_disp,
         first=jnp.bool_(True),
         history=history,
         run=jnp.bool_(True),
-        last_J=jnp.float32(0.0),
-        last_grad_norm=jnp.float32(jnp.inf),
+        last_J=0.0,
+        last_grad_norm=jnp.inf,
     )
-    c_armijo = jnp.float32(1e-4)
+    c_armijo = 1e-4
 
     def cond_fun(state):
         return jnp.logical_and(state.k < max_iter, state.run)
@@ -186,7 +186,7 @@ def _cg_solve(
         grad_norm = jnp.linalg.norm(grad)
         if save_history:
             history = state.history.at[state.k].set(
-                jnp.asarray([J_val, grad_norm], dtype=jnp.float32)
+                jnp.asarray([J_val, grad_norm])
             )
         else:
             history = state.history
@@ -194,7 +194,7 @@ def _cg_solve(
 
         def stop_branch(_):
             return state._replace(
-                k=state.k + jnp.int32(1),
+                k=state.k + 1,
                 history=history,
                 run=jnp.bool_(False),
                 last_J=J_val,
@@ -208,8 +208,8 @@ def _cg_solve(
 
             def dir_conjugate(_):
                 num = jnp.sum(grad * (grad - state.g_prev))
-                den = jnp.sum(state.g_prev * state.g_prev) + jnp.float32(1e-16)
-                beta = jnp.maximum(num / den, jnp.float32(0.0))
+                den = jnp.sum(state.g_prev * state.g_prev) + 1e-16
+                beta = jnp.maximum(num / den, 0.0)
                 return -grad + beta * state.direction
 
             direction = jax.lax.cond(
@@ -244,7 +244,7 @@ def _cg_solve(
                     alpha_next = jnp.where(
                         satisfies,
                         alpha,
-                        alpha * jnp.float32(0.5),
+                        alpha * 0.5,
                     )
                     return alpha_next, J_candidate, satisfies
 
@@ -257,7 +257,7 @@ def _cg_solve(
                 done_next = jnp.logical_or(done, satisfies)
                 return alpha_next, J_candidate_next, done_next
 
-            alpha_init = jnp.float32(1.0)
+            alpha_init = 1.0
             alpha_final, _, _ = jax.lax.fori_loop(
                 0,
                 10,
@@ -266,7 +266,7 @@ def _cg_solve(
             )
             displacement_new = state.displacement + alpha_final * direction
             return state._replace(
-                k=state.k + jnp.int32(1),
+                k=state.k + 1,
                 displacement=displacement_new,
                 direction=direction,
                 g_prev=grad,
@@ -286,7 +286,7 @@ def _cg_solve(
         return new_state
 
     final_state = jax.lax.while_loop(cond_fun, body_fun, init_state)
-    history_out = final_state.history if save_history else jnp.zeros((0, 2), dtype=jnp.float32)
+    history_out = final_state.history if save_history else jnp.zeros((0, 2))
     return (
         final_state.displacement,
         history_out,
@@ -350,22 +350,22 @@ class Dic():
         # 2) Mesh data (NumPy + JAX views)
         nodes_coord_np = np.asarray(self.node_coordinates_binned[:, :2])
         elements_np = np.asarray(self.element_conectivity)
-        nodes_coord_jax = jnp.asarray(nodes_coord_np, dtype=jnp.float32)
+        nodes_coord_jax = jnp.asarray(nodes_coord_np)
 
         pixel_elts_np, pixel_nodes_np = build_pixel_to_element_mapping_numpy(
             pixel_coords, nodes_coord_np, elements_np
         )
-        pixel_coords_jax = jnp.asarray(pixel_coords, dtype=jnp.float32)
-        pixel_nodes_jax = jnp.asarray(pixel_nodes_np, dtype=jnp.int32)
-        pixel_elts = jnp.asarray(pixel_elts_np, dtype=jnp.int32)
+        pixel_coords_jax = jnp.asarray(pixel_coords)
+        pixel_nodes_jax = jnp.asarray(pixel_nodes_np)
+        pixel_elts = jnp.asarray(pixel_elts_np)
 
         pixel_N_jax, xi_eta = compute_pixel_shape_functions_jax(
             pixel_coords_jax,
             pixel_nodes_jax,
             nodes_coord_jax
         )
-        pixel_N_jax = jnp.asarray(pixel_N_jax, dtype=jnp.float32)
-        xi_eta = jnp.asarray(xi_eta, dtype=jnp.float32)
+        pixel_N_jax = jnp.asarray(pixel_N_jax)
+        xi_eta = jnp.asarray(xi_eta)
 
         # Cache everything needed by the solver
         self.pixel_coords_ref = pixel_coords_jax      # (Np,2)
@@ -381,9 +381,9 @@ class Dic():
             np.asarray(self.pixel_shapeN),
             n_nodes,
         )
-        self.node_pixel_index = jnp.asarray(node_pixel_index, dtype=jnp.int32)   # (Nnodes, max_deg)
-        self.node_N_weight    = jnp.asarray(node_N_weight,    dtype=jnp.float32) # (Nnodes, max_deg)
-        self.node_degree      = jnp.asarray(node_degree,      dtype=jnp.int32)   # (Nnodes,)
+        self.node_pixel_index = jnp.asarray(node_pixel_index)   # (Nnodes, max_deg)
+        self.node_N_weight    = jnp.asarray(node_N_weight)      # (Nnodes, max_deg)
+        self.node_degree      = jnp.asarray(node_degree)        # (Nnodes,)
 
         # Build neighbor info for the spring regularization
         node_neighbor_index, node_neighbor_degree, node_neighbor_weight = build_node_neighbor_dense(
@@ -391,9 +391,9 @@ class Dic():
             nodes_coord_np,
             n_nodes,
         )
-        self.node_neighbor_index  = jnp.asarray(node_neighbor_index,  dtype=jnp.int32)
-        self.node_neighbor_degree = jnp.asarray(node_neighbor_degree, dtype=jnp.int32)
-        self.node_neighbor_weight = jnp.asarray(node_neighbor_weight, dtype=jnp.float32)
+        self.node_neighbor_index  = jnp.asarray(node_neighbor_index)
+        self.node_neighbor_degree = jnp.asarray(node_neighbor_degree)
+        self.node_neighbor_weight = jnp.asarray(node_neighbor_weight)
 
 
     # Cached mesh properties
@@ -658,17 +658,17 @@ class Dic():
         provided ``max_iter``/``tol``; when ``save_history`` is True the (J, ||grad||)
         history is returned alongside the optimized displacement.
         """
-        nodes_coord = jnp.asarray(self.node_coordinates_binned[:, :2], dtype=jnp.float32)
+        nodes_coord = jnp.asarray(self.node_coordinates_binned[:, :2])
 
         if disp_guess is None:
-            displacement = jnp.zeros_like(nodes_coord, dtype=jnp.float32)
+            displacement = jnp.zeros_like(nodes_coord)
         else:
             # TODO: revisit this scaling when binning differs from 1.
-            displacement = jnp.asarray(disp_guess, dtype=jnp.float32) / jnp.float32(self.binning)
+            displacement = jnp.asarray(disp_guess) / self.binning
 
-        # Stick to float32 for JAX performance.
-        im1 = jnp.asarray(im1, dtype=jnp.float32)
-        im2 = jnp.asarray(im2, dtype=jnp.float32)
+        # Follow the global JAX default dtype (controlled via jax_enable_x64).
+        im1 = jnp.asarray(im1)
+        im2 = jnp.asarray(im2)
         im1_T = jnp.transpose(im1, (1, 0))
         im2_T = jnp.transpose(im2, (1, 0))
 
@@ -692,7 +692,7 @@ class Dic():
             save_history,
         )
 
-        disp_sol = disp_sol * jnp.asarray(self.binning, dtype=jnp.float32)
+        disp_sol = disp_sol * self.binning
         iterations = int(iterations)
         history = None
         if save_history:
@@ -714,21 +714,21 @@ class Dic():
         limits each update by ``max_step``, and relaxes with ``omega_local`` while using
         the spring neighborhood when ``reg_type == 'spring_jacobi'``.
         """
-        nodes_coord = jnp.asarray(self.node_coordinates_binned[:, :2], dtype=jnp.float32)
+        nodes_coord = jnp.asarray(self.node_coordinates_binned[:, :2])
         if disp_init is None:
-            displacement = jnp.zeros_like(nodes_coord, dtype=jnp.float32)
+            displacement = jnp.zeros_like(nodes_coord)
         else:
-            displacement = jnp.asarray(disp_init, dtype=jnp.float32) / jnp.float32(self.binning)
+            displacement = jnp.asarray(disp_init) / self.binning
 
-        im1 = jnp.asarray(im1, dtype=jnp.float32)
-        im2 = jnp.asarray(im2, dtype=jnp.float32)
+        im1 = jnp.asarray(im1)
+        im2 = jnp.asarray(im2)
         im1_T = jnp.transpose(im1, (1, 0))
         im2_T = jnp.transpose(im2, (1, 0))
 
         # Precompute image-2 gradients once (NumPy).
         gx2_np, gy2_np = compute_image_gradient(np.asarray(im2))
-        gx2_T = jnp.asarray(gx2_np.T, dtype=jnp.float32)
-        gy2_T = jnp.asarray(gy2_np.T, dtype=jnp.float32)
+        gx2_T = jnp.asarray(gx2_np.T)
+        gy2_T = jnp.asarray(gy2_np.T)
 
         if reg_type != "spring_jacobi":
             raise ValueError(f"Unsupported reg_type '{reg_type}' (supported: 'spring_jacobi').")

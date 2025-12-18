@@ -189,13 +189,13 @@ def run_backend_benchmark(backend: str, base_slug: Optional[str] = None) -> Dict
     # Step A: data loading
     with StepTimer(timings, "A_data_load_s"):
         mask_path = DATASET_PATH / MASK_FILENAME
-        im_ref = imread(DATASET_PATH / REF_IMAGE_NAME).astype(np.float32)
+        im_ref = imread(DATASET_PATH / REF_IMAGE_NAME).astype(float)
         all_imgs = sorted(DATASET_PATH.glob(IMAGE_PATTERN))
         frame_paths = [p for p in all_imgs if p.name != REF_IMAGE_NAME]
         if not frame_paths:
             raise RuntimeError("No deformed frames found for benchmarking.")
         frames = frame_paths[:NFRAMES]
-        images_def = [imread(p).astype(np.float32) for p in frames]
+        images_def = [imread(p).astype(float) for p in frames]
 
     # Step B: mesh + Dic
     with StepTimer(timings, "B_dic_setup_s"):
@@ -213,7 +213,7 @@ def run_backend_benchmark(backend: str, base_slug: Optional[str] = None) -> Dict
     warmup_im = images_def[0]
     if DO_WARMUP:
         with StepTimer(timings, "D_warmup_s"):
-            warmup_disp_guess = np.zeros((n_nodes, 2), dtype=np.float32)
+            warmup_disp_guess = np.zeros((n_nodes, 2))
             disp_warmup, _ = dic.run_dic(
                 im_ref,
                 warmup_im,
@@ -229,7 +229,7 @@ def run_backend_benchmark(backend: str, base_slug: Optional[str] = None) -> Dict
         timings["D_warmup_s"] = 0.0
 
     disp_history: List[np.ndarray] = []
-    F_all = np.zeros((len(images_def), n_nodes, 2, 2), dtype=np.float32)
+    F_all = np.zeros((len(images_def), n_nodes, 2, 2))
     E_all = np.zeros_like(F_all)
     frame_names = [p.name for p in frames]
 

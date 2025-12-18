@@ -27,8 +27,22 @@ from D2IC.app_utils import run_pipeline_sequence as run_pipeline_sequence_app
 # Non-interactive backend so figures can be saved without a display.
 matplotlib.use("Agg")
 
-# JAX configuration: float64 to match the notebook, CPU fallback for portability.
-jax.config.update("jax_platform_name", "gpu")
+
+def _configure_jax_platform(preferred: str = "gpu", fallback: str = "cpu") -> None:
+    """Try to use the preferred accelerator, but fall back to CPU when unavailable."""
+    try:
+        devices = jax.devices(preferred)
+    except RuntimeError:
+        devices = []
+    if devices:
+        jax.config.update("jax_platform_name", preferred)
+        print(f"JAX backend: {preferred} ({len(devices)} device(s) detected)")
+    else:
+        jax.config.update("jax_platform_name", fallback)
+        print(f"JAX backend: {preferred} unavailable, falling back to {fallback}.")
+
+
+_configure_jax_platform()
 
 # --------------------------------------------------------------------------- #
 #                PARAMETERS TO ADJUST (SECTION FOR NON-EXPERTS)               #

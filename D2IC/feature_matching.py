@@ -15,7 +15,7 @@ def _points_in_mesh_area(points, mesh_nodes=None, mesh_elements=None, dilation: 
         return np.ones(points.shape[0], dtype=bool)
 
     nodes = np.asarray(mesh_nodes)
-    elements = np.asarray(mesh_elements, dtype=np.int32)
+    elements = np.asarray(mesh_elements, dtype=int)
     if nodes.ndim != 2 or nodes.shape[1] < 2:
         raise ValueError("Mesh nodes must be provided as (n_nodes, >=2) coordinates.")
     if elements.size == 0:
@@ -25,7 +25,7 @@ def _points_in_mesh_area(points, mesh_nodes=None, mesh_elements=None, dilation: 
     mask = np.zeros(points.shape[0], dtype=bool)
     dilation = float(dilation) if dilation else 0.0
     for quad in elements:
-        path = Path(nodes_xy[np.asarray(quad, dtype=np.int32)])
+        path = Path(nodes_xy[np.asarray(quad, dtype=int)])
         mask |= path.contains_points(points, radius=dilation)
     return mask
 

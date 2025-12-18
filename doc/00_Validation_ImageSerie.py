@@ -13,7 +13,6 @@ import re
 from pathlib import Path
 from typing import List, Tuple
 
-import jax
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,9 +23,6 @@ from D2IC.dic import Dic
 
 # Non-interactive backend so the plot is saved even on headless systems.
 matplotlib.use("Agg")
-
-# Always enable float64 in JAX to match the DIC notebooks.
-jax.config.update("jax_enable_x64", True)
 
 # Set a clean style suitable for publication-quality plots.
 plt.rcParams.update(
@@ -72,12 +68,12 @@ def _load_sequence() -> Tuple[np.ndarray, List[np.ndarray], np.ndarray, List[Pat
     """Read the reference image, the deformed frames, and their ground truth."""
     if not IMG_DIR.exists():
         raise FileNotFoundError(f"Image directory not found: {IMG_DIR}")
-    im_ref = imread(IMG_DIR / REF_IMAGE_NAME).astype(np.float32)
+    im_ref = imread(IMG_DIR / REF_IMAGE_NAME).astype(float)
     frame_paths = sorted(IMG_DIR.glob(IMAGE_PATTERN))
     deformed_paths = [p for p in frame_paths if p.name != REF_IMAGE_NAME]
     if not deformed_paths:
         raise FileNotFoundError(f"No deformed images matching {IMAGE_PATTERN}.")
-    images_def = [imread(path).astype(np.float32) for path in deformed_paths]
+    images_def = [imread(path).astype(float) for path in deformed_paths]
     expected = np.array([_parse_expected_displacement(p) for p in deformed_paths], dtype=np.float64)
     return im_ref, images_def, expected, deformed_paths
 
@@ -96,8 +92,8 @@ def _solve_sequence(im_ref: np.ndarray, images_def: List[np.ndarray]) -> np.ndar
     dic.precompute_pixel_data(im_ref)
 
     n_nodes = int(dic.node_coordinates.shape[0])
-    disp_history = np.zeros((len(images_def), n_nodes, 2), dtype=np.float64)
-    disp_guess = np.zeros((n_nodes, 2), dtype=np.float64)
+    disp_history = np.zeros((len(images_def), n_nodes, 2))
+    disp_guess = np.zeros((n_nodes, 2))
 
     for i, im_def in enumerate(images_def):
         disp_opt, _ = dic.run_dic(
@@ -109,7 +105,7 @@ def _solve_sequence(im_ref: np.ndarray, images_def: List[np.ndarray]) -> np.ndar
             reg_type=DIC_REG_TYPE,
             alpha_reg=DIC_ALPHA_REG,
         )
-        disp_np = np.asarray(disp_opt, dtype=np.float64)
+        disp_np = np.asarray(disp_opt)
         disp_history[i] = disp_np
         disp_guess = disp_np  # propagate to the next frame
 
@@ -123,7 +119,7 @@ def _plot_mean_displacements(
     frame_labels: List[str],
 ) -> None:
     """Create a two-panel publication-ready plot for Ux and Uy statistics."""
-    x = np.arange(1, mean_disp.shape[0] + 1, dtype=np.int32)
+    x = np.arange(1, mean_disp.shape[0] + 1, dtype=int)
     fig, axes = plt.subplots(2, 1, sharex=True)
     colors = ("#1b9e77", "#d95f02")
     for ax, comp_idx, title, color in zip(axes, (0, 1), ("Ux", "Uy"), colors):

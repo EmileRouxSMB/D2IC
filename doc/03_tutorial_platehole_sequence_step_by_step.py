@@ -1,5 +1,5 @@
 """
-Step-by-step (non-notebook) DIC workflow on the "ButterFly" image SEQUENCE.
+Step-by-step (non-notebook) DIC workflow on the PlateHole image SEQUENCE.
 Designed for users not familiar with Python: simply tweak the parameters below.
 
 How to run:
@@ -27,9 +27,6 @@ from D2IC.app_utils import run_pipeline_sequence as run_pipeline_sequence_app
 # Non-interactive backend so figures can be saved without a display.
 matplotlib.use("Agg")
 
-# JAX configuration: float64 to match the notebook, CPU fallback for portability.
-jax.config.update("jax_enable_x64", True)
-
 
 def _configure_jax_platform(preferred: str = "gpu", fallback: str = "cpu") -> None:
     """Force a backend when available, otherwise fall back to CPU to avoid crashes."""
@@ -46,6 +43,8 @@ def _configure_jax_platform(preferred: str = "gpu", fallback: str = "cpu") -> No
 
 
 _configure_jax_platform()
+# eanble 64-bit floats for better accuracy
+jax.config.update("jax_enable_x64", True)
 
 # --------------------------------------------------------------------------- #
 #                PARAMETERS TO ADJUST (SECTION FOR NON-EXPERTS)               #
@@ -66,14 +65,14 @@ IMAGE_PATTERN = "ohtcfrp_*.tif"  # pattern used to list deformed images
 OUT_DIR = PWD / "_outputs" / "sequence_platehole"
 
 # ROI mesh generation parameter.
-MESH_ELEMENT_SIZE_PX = 40.0
+MESH_ELEMENT_SIZE_PX = 20.
 
 # Global DIC (CG solver) and local refinement parameters.
-DIC_MAX_ITER = 400
+DIC_MAX_ITER = 4000
 DIC_TOL = 1e-3
 DIC_REG_TYPE = "spring"
 DIC_ALPHA_REG = 0.1
-LOCAL_SWEEPS = 3  # set to 0 to disable nodal refinement
+LOCAL_SWEEPS = 10  # set to 0 to disable nodal refinement
 
 # Initialization options for subsequent frames.
 USE_VELOCITY = True
@@ -81,7 +80,7 @@ VEL_SMOOTHING = 0.5
 
 # Strain computation parameters.
 STRAIN_K_RING = 2
-STRAIN_GAUGE_LENGTH = 200.0
+STRAIN_GAUGE_LENGTH = 40.0
 
 # Frames to export (leave None for all).
 FRAMES_TO_PLOT = None

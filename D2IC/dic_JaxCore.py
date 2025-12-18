@@ -29,15 +29,15 @@ def build_node_neighbor_dense(elements, nodes_coord, n_nodes):
     degrees = [len(s) for s in neigh_sets]
     max_deg = max(degrees) if degrees else 0
 
-    node_neighbor_index  = -np.ones((n_nodes, max_deg), dtype=np.int32)
-    node_neighbor_degree = np.asarray(degrees, dtype=np.int32)
-    node_neighbor_weight = np.zeros((n_nodes, max_deg), dtype=np.float32)
+    node_neighbor_index  = np.full((n_nodes, max_deg), -1, dtype=int)
+    node_neighbor_degree = np.asarray(degrees, dtype=int)
+    node_neighbor_weight = np.zeros((n_nodes, max_deg), dtype=float)
 
     # Fill the dense arrays and assign weights ~ 1 / ||x_i - x_j||.
     for i in range(n_nodes):
         if degrees[i] == 0:
             continue
-        neigh_i = np.asarray(sorted(neigh_sets[i]), dtype=np.int32)
+        neigh_i = np.asarray(sorted(neigh_sets[i]), dtype=int)
         node_neighbor_index[i, :degrees[i]] = neigh_i
 
         xi = nodes_coord[i, :2]  # (2,)
@@ -45,7 +45,7 @@ def build_node_neighbor_dense(elements, nodes_coord, n_nodes):
         dist = np.linalg.norm(xj - xi[None, :], axis=1)
         # small epsilon to avoid dividing by zero
         w = 1.0 / (dist + 1e-6)
-        node_neighbor_weight[i, :degrees[i]] = w.astype(np.float32)
+        node_neighbor_weight[i, :degrees[i]] = w
 
     return node_neighbor_index, node_neighbor_degree, node_neighbor_weight
 
@@ -78,13 +78,13 @@ def build_k_ring_neighbors(node_neighbor_index, node_neighbor_degree, k=2):
     degrees = [len(s) for s in neigh_sets]
     max_deg_k = max(degrees) if degrees else 0
 
-    neigh_index_k = -np.ones((Nnodes, max_deg_k), dtype=np.int32)
-    neigh_degree_k = np.asarray(degrees, dtype=np.int32)
+    neigh_index_k = np.full((Nnodes, max_deg_k), -1, dtype=int)
+    neigh_degree_k = np.asarray(degrees, dtype=int)
 
     for i in range(Nnodes):
         if degrees[i] == 0:
             continue
-        neigh_i = np.asarray(sorted(neigh_sets[i]), dtype=np.int32)
+        neigh_i = np.asarray(sorted(neigh_sets[i]), dtype=int)
         neigh_index_k[i, :degrees[i]] = neigh_i
 
     return neigh_index_k, neigh_degree_k
@@ -299,16 +299,16 @@ def build_node_pixel_dense(pixel_nodes, pixel_shapeN, n_nodes):
     max_deg = max(degrees) if degrees else 0
 
     # Populate the dense arrays.
-    node_pixel_index = -np.ones((n_nodes, max_deg), dtype=np.int32)
-    node_N_weight = np.zeros((n_nodes, max_deg), dtype=np.float32)
-    node_degree = np.asarray(degrees, dtype=np.int32)
+    node_pixel_index = np.full((n_nodes, max_deg), -1, dtype=int)
+    node_N_weight = np.zeros((n_nodes, max_deg), dtype=float)
+    node_degree = np.asarray(degrees, dtype=int)
 
     for i in range(n_nodes):
         deg_i = degrees[i]
         if deg_i == 0:
             continue
-        node_pixel_index[i, :deg_i] = np.asarray(per_node_pixels[i], dtype=np.int32)
-        node_N_weight[i, :deg_i] = np.asarray(per_node_weights[i], dtype=np.float32)
+        node_pixel_index[i, :deg_i] = np.asarray(per_node_pixels[i], dtype=int)
+        node_N_weight[i, :deg_i] = np.asarray(per_node_weights[i], dtype=float)
 
     return node_pixel_index, node_N_weight, node_degree
 
@@ -340,7 +340,7 @@ def compute_pixel_state(displacement,
     return r, x_def, gx_def, gy_def
 
 def compute_image_gradient(im):
-    im = np.asarray(im, dtype=np.float32)
+    im = np.asarray(im, dtype=float)
     gx = np.zeros_like(im)
     gy = np.zeros_like(im)
     gx[:, 1:-1] = 0.5 * (im[:, 2:] - im[:, :-2])
@@ -528,7 +528,7 @@ def compute_green_lagrange_strain_nodes_lsq(
     node_neighbor_degree = jnp.asarray(node_neighbor_degree)
 
     Nnodes, max_deg = node_neighbor_index.shape
-    L = jnp.squeeze(jnp.asarray(gauge_length, dtype=jnp.float32))
+    L = jnp.squeeze(jnp.asarray(gauge_length))
 
     def one_node(i):
         xi = X[i]        # (2,)
@@ -549,7 +549,7 @@ def compute_green_lagrange_strain_nodes_lsq(
 
         # Distances and weights
         r = jnp.linalg.norm(dX, axis=1)    # (max_deg,)
-        base_w = mask.astype(jnp.float32)  # zero weight on inactive padding
+        base_w = mask.astype(float)  # zero weight on inactive padding
         w_exp = base_w * jnp.exp(-(r / (L + 1e-12)) ** 2)
         w = jnp.where(L > 0.0, w_exp, base_w)  # (max_deg,)
 

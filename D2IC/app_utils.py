@@ -92,7 +92,7 @@ def run_dic_sequence(
         raise ValueError("No deformed image was provided to run_dic_sequence.")
 
     n_nodes = int(dic.node_coordinates.shape[0])
-    disp_all = np.zeros((n_frames, n_nodes, 2), dtype=np.float32)
+    disp_all = np.zeros((n_frames, n_nodes, 2))
     history_all: List[dict] = [{} for _ in range(n_frames)]
 
     def _limit_extrapolation(guess: np.ndarray, anchor: np.ndarray) -> np.ndarray:
@@ -106,7 +106,7 @@ def run_dic_sequence(
         return anchor + delta
 
     # Frame 0: initialize with sparse correspondences.
-    disp_guess = disp_guess_first if disp_guess_first is not None else np.zeros((n_nodes, 2), dtype=np.float32)
+    disp_guess = disp_guess_first if disp_guess_first is not None else np.zeros((n_nodes, 2))
     print("   [Frame 0] Global DIC with feature-based initial field")
     disp0, hist0 = dic.run_dic(
         im_ref,
@@ -126,7 +126,7 @@ def run_dic_sequence(
             n_sweeps=n_sweeps_local,
             lam=0.1,
             reg_type="spring_jacobi",
-            alpha_reg=100.0,
+            alpha_reg=1.0,
             max_step=0.2,
             omega_local=0.5,
         )
@@ -210,14 +210,14 @@ def run_pipeline_sequence(
     if not mask_path.exists():
         raise FileNotFoundError(f"ROI mask not found: {mask_path}")
 
-    im_ref = imread(im_ref_path).astype(np.float32)
+    im_ref = imread(im_ref_path).astype(float)
 
     all_imgs = sorted(img_dir.glob(image_pattern))
     im_def_paths = [p for p in all_imgs if p.name != im_ref_path.name]
     if len(im_def_paths) == 0:
         raise FileNotFoundError(f"No deformed image found in {img_dir} (pattern {image_pattern}).")
 
-    images_def = [imread(path).astype(np.float32) for path in im_def_paths]
+    images_def = [imread(path).astype(float) for path in im_def_paths]
     n_frames = len(images_def)
     print(f"   - Reference image shape: {im_ref.shape}")
     print(f"   - {n_frames} deformed images detected: {[p.name for p in im_def_paths]}")
@@ -231,7 +231,7 @@ def run_pipeline_sequence(
 
     print("3) Create the Dic object and precompute pixel data")
     dic = Dic(mesh_path=str(mesh_path))
-    dic.precompute_pixel_data(jnp.asarray(im_ref, dtype=jnp.float32))
+    dic.precompute_pixel_data(jnp.asarray(im_ref))
     n_nodes = int(dic.node_coordinates.shape[0])
     print(f"   - Number of nodes: {n_nodes}")
 
@@ -263,7 +263,7 @@ def run_pipeline_sequence(
     print(f"   - Frames selected for visualization: {frames_to_plot_arr}")
 
     print("6) Progressive post-processing: calculations + exports on the fly")
-    F_all_seq = np.zeros((n_frames, n_nodes, 2, 2), dtype=np.float32)
+    F_all_seq = np.zeros((n_frames, n_nodes, 2, 2))
     E_all_seq = np.zeros_like(F_all_seq)
     frame_fields_dir = out_dir / "per_frame_fields"
     frame_fields_dir.mkdir(parents=True, exist_ok=True)
