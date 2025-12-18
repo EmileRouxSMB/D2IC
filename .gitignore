@@ -10,3 +10,4 @@ __pycache__/*
 *.egg-info
 *.geo_unrolled
 _outputs*
+resultat/*

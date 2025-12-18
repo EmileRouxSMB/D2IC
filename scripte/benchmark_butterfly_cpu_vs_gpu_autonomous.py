@@ -26,7 +26,7 @@ import shutil
 # =====================
 # SETTINGS
 # =====================
-DATASET_DIR = "doc/img/butterFly"
+DATASET_DIR = Path("doc") / "img" / "butterFly"
 REF_IMAGE_NAME = "VIS_0000.tif"
 MASK_FILENAME = "roi.tif"
 IMAGE_PATTERN = "VIS_*.tif"
@@ -36,7 +36,7 @@ EXPORT_NPZ = True
 EXPORT_FIGURES = False
 MAX_ITER = 400
 TOL = 1e-2
-OUTPUT_DIR = "benchmark_results"
+OUTPUT_DIR = Path("doc") / "benchmark_results"
 MESH_ELEMENT_SIZE_PX = 40.0
 DIC_REG_TYPE = "spring"
 DIC_ALPHA_REG = 0.5
@@ -60,7 +60,7 @@ PLOT_ALPHA = 0.6
 FRAMES_TO_PLOT: Optional[List[int]] = None
 FIG_COMPONENTS = ("Ux", "Uy", "Exx", "Exy", "Eyy")
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parents[1]  # repository root
 DATASET_PATH = (BASE_DIR / DATASET_DIR).resolve()
 OUTPUT_PATH = (BASE_DIR / OUTPUT_DIR).resolve()
 STEP_LABELS = [
