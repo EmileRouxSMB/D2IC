@@ -1,10 +1,3 @@
-Step,CPU_s,GPU_s,Speedup
-A: data load,0.165780,0.144162,1.149952
-B: mesh + DIC,0.137026,0.136608,1.003061
-C: precompute,30.664636,28.714716,1.067907
-D: warmup,2.269661,2.820699,0.804645
-E: run_dic total,16.518661,10.340000,1.597549
-F: strain,0.412779,1.022978,0.403507
-G: export NPZ,0.015269,0.012442,1.227199
-G: export figures,0.000000,0.000000,
-H: total,50.184196,43.192346,1.161877
+machine_id,backend,status,A_data_load_s,B_dic_setup_s,C_precompute_s,D_warmup_s,E_solve_total_s,F_strain_s,G_npz_export_s,G_figures_export_s,H_total_s,per_frame_mean_s,per_frame_std_s,per_frame_total_s
+dba968e2542d-x86-64__x86-64__cpu,cpu,ok,0.022978,0.062999,25.507618,2.685210,18.397738,0.440108,0.000766,0.000000,47.117739,2.299717,0.455791,18.397738
+dba968e2542d-x86-64__nvidia-rtx-2000-ada-generation__gpu,gpu,ok,0.024223,0.057331,20.051989,2.553378,5.980588,0.894120,0.000674,0.000000,29.562599,0.747573,0.634366,5.980588
