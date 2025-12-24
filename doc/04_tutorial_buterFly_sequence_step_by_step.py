@@ -84,6 +84,11 @@ FRAMES_TO_PLOT = None
 PLOT_CMAP = "jet"
 PLOT_ALPHA = 0.6
 
+# Sparse-match initialization toggle.
+ENABLE_INITIAL_GUESS = True
+# Downsample factor for reference/deformed images (1 keeps native resolution).
+IMAGE_BINNING = 1
+
 
 def run_pipeline_sequence() -> Tuple[np.ndarray, np.ndarray]:
     """Wrapper around the full pipeline using the parameters defined above."""
@@ -106,6 +111,8 @@ def run_pipeline_sequence() -> Tuple[np.ndarray, np.ndarray]:
         frames_to_plot=FRAMES_TO_PLOT,
         plot_cmap=PLOT_CMAP,
         plot_alpha=PLOT_ALPHA,
+        enable_initial_guess=ENABLE_INITIAL_GUESS,
+        image_binning=IMAGE_BINNING,
     )
 
 

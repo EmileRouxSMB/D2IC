@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Optional
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 from skimage.color import rgb2gray
 from skimage.feature import corner_harris, corner_peaks
@@ -84,6 +86,20 @@ def select_patch_centers(I: np.ndarray, K: int = 16, min_dist: int = 32) -> np.n
     pts = np.array([(float(x), float(y)) for y, x in chosen], dtype=np.float64)
     return pts
 
+
+@jax.jit
+def _zncc_argmax(template: jnp.ndarray, windows: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Return the (argmax, score) of the normalized cross-correlation over ``windows``."""
+    template = template - jnp.mean(template)
+    template = template / (jnp.std(template) + 1e-12)
+    windows = windows - jnp.mean(windows, axis=(1, 2), keepdims=True)
+    windows = windows / (jnp.std(windows, axis=(1, 2), keepdims=True) + 1e-12)
+    scores = jnp.mean(windows * template, axis=(1, 2))
+    best_idx = jnp.argmax(scores)
+    best_score = scores[best_idx]
+    return best_idx, best_score
+
+
 def match_patch_zncc(
     I0: np.ndarray,
     I1: np.ndarray,
@@ -101,7 +117,6 @@ def match_patch_zncc(
         return None
 
     template = I0g[y - r : y + r + 1, x - r : x + r + 1].astype(np.float64, copy=False)
-    template = (template - template.mean()) / (template.std() + 1e-12)
 
     xs = x + int(round(pred[0])) - search
     ys = y + int(round(pred[1])) - search
@@ -114,19 +129,97 @@ def match_patch_zncc(
     windows = view_as_windows(patch, (win, win))
     hs, ws = windows.shape[:2]
     windows = windows.reshape(hs * ws, win, win)
-    windows = (windows - windows.mean((1, 2), keepdims=True)) / (
-        windows.std((1, 2), keepdims=True) + 1e-12
+    best_idx_jax, best_score_jax = _zncc_argmax(
+        jnp.asarray(template),
+        jnp.asarray(windows),
     )
-    scores = (windows * template).sum(axis=(1, 2)) / (win * win)
-    best_idx = int(np.argmax(scores))
+    best_idx = int(best_idx_jax)
     ky, kx = divmod(best_idx, ws)
-    score = float(scores[best_idx])
+    score = float(best_score_jax)
     yy = ys + ky
     xx = xs + kx
     x_best = xx
     y_best = yy
     disp = np.array([x_best - x, y_best - y], dtype=np.float64)
     return disp, score
+
+
+def translation_patch_matches_zncc(
+    I0: np.ndarray,
+    I1: np.ndarray,
+    centers: np.ndarray,
+    win: int = 41,
+    search: int = 24,
+    pred: tuple[float, float] = (0.0, 0.0),
+    score_min: float | None = None,
+    max_centers: int | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Match fixed patches around ``centers`` via pure translations scored by ZNCC.
+
+    Parameters
+    ----------
+    centers: array_like
+        Coordinates ``(x, y)`` of candidate patches (typically element centers).
+    win: int
+        Patch size (pixels) in both directions; must be odd.
+    search: int
+        Half-width of the square search window explored in ``I1``.
+    pred: tuple
+        Optional global prediction ``(dx, dy)`` added to each center before searching.
+    score_min: float or None
+        Keep only matches whose ZNCC score is >= ``score_min`` when set.
+    max_centers: int or None
+        Evaluate at most this many centers (useful for quick tests).
+    """
+    centers = np.asarray(centers, dtype=np.float64)
+    if centers.ndim != 2 or centers.shape[1] != 2:
+        raise ValueError("centers must be an array of shape (N, 2).")
+    if win % 2 == 0:
+        raise ValueError("win must be odd.")
+    pred_dx, pred_dy = map(float, pred)
+    max_n = centers.shape[0] if max_centers is None else int(max_centers)
+    pts_ref: list[np.ndarray] = []
+    pts_def: list[np.ndarray] = []
+    scores: list[float] = []
+
+    print("Starting translation patch matches ZNCC...")
+    print(f"  Number of centers to evaluate: {min(centers.shape[0], max_n)}")
+    print(f"  Patch size: {win}x{win}, Search radius: {search}")
+    print(f"  Initial prediction: {pred}")
+    print(f"  Minimum score threshold: {score_min}")
+
+
+    for idx in range(min(centers.shape[0], max_n)):
+        p = centers[idx]
+        disp_score = match_patch_zncc(
+            I0,
+            I1,
+            p,
+            win=win,
+            search=search,
+            pred=(pred_dx, pred_dy),
+        )
+        if disp_score is None:
+            continue
+        disp, zncc = disp_score
+        if score_min is not None and zncc < score_min:
+            continue
+        pts_ref.append(p)
+        pts_def.append(p + disp)
+        scores.append(float(zncc))
+
+    if not pts_ref:
+        return (
+            np.empty((0, 2), dtype=np.float64),
+            np.empty((0, 2), dtype=np.float64),
+            np.empty(0, dtype=np.float64),
+        )
+
+    pts_ref_arr = np.asarray(pts_ref, dtype=np.float64)
+    pts_def_arr = np.asarray(pts_def, dtype=np.float64)
+    scores_arr = np.asarray(scores, dtype=np.float64)
+    print(f"translation_patch_matches_zncc: Found {pts_ref_arr.shape[0]} valid matches.")
+    return pts_ref_arr, pts_def_arr, scores_arr
 
 
 def _inverse_distance_weighting(
@@ -272,13 +365,37 @@ def big_motion_sparse_matches(
     search: int = 24,
     interp_method: str | None = "rbf",
     centers: np.ndarray | None = None,
+    mode: str = "robust",
+    pred: tuple[float, float] = (0.0, 0.0),
+    score_min: float | None = None,
+    max_centers: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Find up to ``K`` textured correspondences robust to large rigid motions.
+    """Find sparse correspondences either via robust rotation+scale search or pure translation ZNCC.
 
-    Returns ``(pts_ref, pts_def, scores)`` in ``(x, y)`` order; ``centers`` lets you override the sampling grid.
+    Parameters
+    ----------
+    mode: {"robust", "translation_zncc"}
+        ``"robust"`` keeps the default rotation/scale-insensitive pipeline (Harris + RANSAC).
+        ``"translation_zncc"`` skips feature detection and performs pure translations scored via ZNCC
+        using the provided ``centers`` (typically mesh element centers).
     """
     ref = _ensure_gray_float(I0)
     mov = _ensure_gray_float(I1)
+
+    if mode.lower() in {"translation", "translation_zncc"}:
+        if centers is None:
+            raise ValueError("translation_zncc mode requires explicit centers.")
+        pts_ref_t, pts_def_t, scores_t = translation_patch_matches_zncc(
+            ref,
+            mov,
+            centers,
+            win=win,
+            search=search,
+            pred=pred,
+            score_min=score_min,
+            max_centers=max_centers,
+        )
+        return pts_ref_t, pts_def_t, scores_t
 
     theta, scale = rotation_scale_logpolar(ref, mov)
     center_xy = np.array([ref.shape[1] / 2.0, ref.shape[0] / 2.0], dtype=np.float64)
@@ -340,7 +457,49 @@ __all__ = [
     "rotation_scale_logpolar",
     "select_patch_centers",
     "match_patch_zncc",
+    "translation_patch_matches_zncc",
     "interpolate_displacement_field",
     "make_displacement_predictor",
     "big_motion_sparse_matches",
 ]
+
+
+def _test_translation_patch_matches_zncc() -> None:
+    """Quick sanity check for ``translation_patch_matches_zncc``."""
+    rng = np.random.default_rng(0)
+    H, W = 64, 64
+    base = rng.normal(size=(H, W)).astype(np.float64)
+    dx, dy = 3, -2
+
+    def shift_image(im: np.ndarray, dx_px: int, dy_px: int) -> np.ndarray:
+        out = np.zeros_like(im)
+        if dx_px >= 0:
+            src_x0, dst_x0 = 0, dx_px
+            width = W - dx_px
+        else:
+            src_x0, dst_x0 = -dx_px, 0
+            width = W + dx_px
+        if dy_px >= 0:
+            src_y0, dst_y0 = 0, dy_px
+            height = H - dy_px
+        else:
+            src_y0, dst_y0 = -dy_px, 0
+            height = H + dy_px
+        out[dst_y0 : dst_y0 + height, dst_x0 : dst_x0 + width] = im[src_y0 : src_y0 + height, src_x0 : src_x0 + width]
+        return out
+
+    shifted = shift_image(base, dx, dy)
+    centers = np.array([[20.0, 20.0], [30.0, 30.0]], dtype=np.float64)
+    pts_ref, pts_def, scores = translation_patch_matches_zncc(
+        base,
+        shifted,
+        centers,
+        win=21,
+        search=6,
+        pred=(0.0, 0.0),
+    )
+    disp = pts_def - pts_ref
+    print("Estimated displacement:", disp)
+    print("Scores:", scores)
+    assert np.allclose(disp, np.array([[dx, dy]] * disp.shape[0]), atol=1.0), "Translation estimates off."
+    assert np.all(scores > 0.8), "ZNCC scores too low."

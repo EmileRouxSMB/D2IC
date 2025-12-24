@@ -331,34 +331,55 @@ class Dic():
         H, W = im.shape[:2]
         self._image_shape = (H, W)
 
-        # 1) Build pixel coordinates over the ROI
-        jj, ii = np.meshgrid(np.arange(W), np.arange(H))
-        pixel_coords = np.stack([jj.ravel() + 0.5,
-                                 ii.ravel() + 0.5], axis=1)  # (Np_all,2)
+        nodes_coord_np = np.asarray(self.node_coordinates_binned[:, :2])
+        print("   [precompute] Step 1/5: ROI pixel sampling in mesh bounding box")
+        # 1) Build pixel coordinates restricted to the mesh bounding box (pads by ~2 px)
+        x_min = float(nodes_coord_np[:, 0].min())
+        x_max = float(nodes_coord_np[:, 0].max())
+        y_min = float(nodes_coord_np[:, 1].min())
+        y_max = float(nodes_coord_np[:, 1].max())
+        bbox_pad = 2.0
+        j0 = max(0, int(np.floor(x_min - bbox_pad)))
+        j1 = min(W, int(np.ceil(x_max + bbox_pad)))
+        i0 = max(0, int(np.floor(y_min - bbox_pad)))
+        i1 = min(H, int(np.ceil(y_max + bbox_pad)))
+        if j1 <= j0 or i1 <= i0:
+            raise RuntimeError("Mesh bounding box is degenerate.")
 
-        # Restrict to pixels lying in or near the mesh footprint
-        mask = _points_in_mesh_area(
-            pixel_coords,
-            mesh_nodes=np.asarray(self.node_coordinates_binned[:, :2]),
-            mesh_elements=np.asarray(self.element_conectivity)
-        )
-        mask = np.asarray(mask, dtype=bool).reshape(-1)
-        self._roi_mask = mask.reshape(H, W)
-        self._roi_flat_indices = np.flatnonzero(mask)
-        pixel_coords = pixel_coords[mask]
+        jj, ii = np.meshgrid(np.arange(j0, j1), np.arange(i0, i1))
+        pixel_coords = np.stack([jj.ravel() + 0.5, ii.ravel() + 0.5], axis=1)  # (Np_box,2)
+        print(f"      - Bounding box size: {(i1 - i0)}x{(j1 - j0)} px ({pixel_coords.shape[0]} candidates)")
 
         # 2) Mesh data (NumPy + JAX views)
-        nodes_coord_np = np.asarray(self.node_coordinates_binned[:, :2])
         elements_np = np.asarray(self.element_conectivity)
         nodes_coord_jax = jnp.asarray(nodes_coord_np)
 
+        print("   [precompute] Step 2/5: Pixel→element association (NumPy)")
         pixel_elts_np, pixel_nodes_np = build_pixel_to_element_mapping_numpy(
             pixel_coords, nodes_coord_np, elements_np
         )
+
+        valid_mask = pixel_elts_np >= 0
+        if not np.any(valid_mask):
+            raise RuntimeError("No ROI pixel found after element lookup.")
+        pixel_coords = pixel_coords[valid_mask]
+        pixel_elts_np = pixel_elts_np[valid_mask]
+        pixel_nodes_np = pixel_nodes_np[valid_mask]
+        print(f"      - Pixels retained within ROI: {pixel_coords.shape[0]}")
+
+        roi_mask = np.zeros((H, W), dtype=bool)
+        roi_cols = np.clip(np.floor(pixel_coords[:, 0] - 0.5).astype(int), 0, W - 1)
+        roi_rows = np.clip(np.floor(pixel_coords[:, 1] - 0.5).astype(int), 0, H - 1)
+        roi_mask[roi_rows, roi_cols] = True
+        self._roi_mask = roi_mask
+        self._roi_flat_indices = np.ravel_multi_index((roi_rows, roi_cols), (H, W))
+
         pixel_coords_jax = jnp.asarray(pixel_coords)
         pixel_nodes_jax = jnp.asarray(pixel_nodes_np)
         pixel_elts = jnp.asarray(pixel_elts_np)
+        print("      - Pixel→element mapping done")
 
+        print("   [precompute] Step 3/5: Shape-function inversion (JAX)")
         pixel_N_jax, xi_eta = compute_pixel_shape_functions_jax(
             pixel_coords_jax,
             pixel_nodes_jax,
@@ -366,6 +387,7 @@ class Dic():
         )
         pixel_N_jax = jnp.asarray(pixel_N_jax)
         xi_eta = jnp.asarray(xi_eta)
+        print("      - Shape functions computed")
 
         # Cache everything needed by the solver
         self.pixel_coords_ref = pixel_coords_jax      # (Np,2)
@@ -376,16 +398,19 @@ class Dic():
     
         # Build CSR-style node → pixel data structures
         n_nodes = self.node_coordinates_binned.shape[0]
+        print("   [precompute] Step 4/5: Building node→pixel structures (JAX)")
         node_pixel_index, node_N_weight, node_degree = build_node_pixel_dense(
-            np.asarray(self.pixel_nodes),
-            np.asarray(self.pixel_shapeN),
+            pixel_nodes_np,
+            self.pixel_shapeN,
             n_nodes,
         )
         self.node_pixel_index = jnp.asarray(node_pixel_index)   # (Nnodes, max_deg)
         self.node_N_weight    = jnp.asarray(node_N_weight)      # (Nnodes, max_deg)
         self.node_degree      = jnp.asarray(node_degree)        # (Nnodes,)
+        print("      - Node→pixel CSR cached")
 
         # Build neighbor info for the spring regularization
+        print("   [precompute] Step 5/5: Building node neighbor tables (JAX)")
         node_neighbor_index, node_neighbor_degree, node_neighbor_weight = build_node_neighbor_dense(
             elements_np,
             nodes_coord_np,
@@ -394,6 +419,7 @@ class Dic():
         self.node_neighbor_index  = jnp.asarray(node_neighbor_index)
         self.node_neighbor_degree = jnp.asarray(node_neighbor_degree)
         self.node_neighbor_weight = jnp.asarray(node_neighbor_weight)
+        print("      - Neighbor tables ready")
 
 
     # Cached mesh properties
@@ -508,9 +534,13 @@ class Dic():
         search_dilation=0.0,
         use_element_centers=False,
         element_stride=1,
+        initial_match_mode: str = "robust",
     ):
         """Build a nodal displacement guess from sparse ZNCC matches before full DIC.
 
+        ``initial_match_mode`` can be ``"robust"`` (default rotation/scale-insensitive search +
+        RANSAC) or ``"translation_zncc"`` which samples fixed element centers and performs
+        pure translation searches via ZNCC.
         Samples textured patches (or element centers), filters them with local RANSAC,
         interpolates inlier displacements with weighted RBFs, and optionally runs subpixel NCC.
         Returns the nodal guess and a diagnostics dict (matches, scores, model, interpolator).
@@ -522,27 +552,48 @@ class Dic():
         if stride < 1:
             raise ValueError("element_stride must be a positive integer.")
 
-        if use_element_centers:
+        match_mode = str(initial_match_mode).lower()
+        used_elem_centers_flag = bool(use_element_centers)
+
+        if match_mode in {"translation", "translation_zncc"}:
             centers = self._compute_element_centers_binned()
             centers = centers[::stride]
             centers_used = centers
+            used_elem_centers_flag = True
             pts_ref_raw, pts_def_raw, scores_raw = big_motion_sparse_matches(
                 im_ref,
                 im_def,
-                K=centers.shape[0],
                 win=patch_win,
                 search=patch_search,
-                interp_method="rbf",
                 centers=centers,
+                mode="translation_zncc",
             )
+
+
         else:
-            pts_ref_raw, pts_def_raw, scores_raw = big_motion_sparse_matches(
-                im_ref,
-                im_def,
-                K=n_patches,
-                win=patch_win,
-                search=patch_search,
-            )
+            if use_element_centers:
+                centers = self._compute_element_centers_binned()
+                centers = centers[::stride]
+                centers_used = centers
+                pts_ref_raw, pts_def_raw, scores_raw = big_motion_sparse_matches(
+                    im_ref,
+                    im_def,
+                    K=centers.shape[0],
+                    win=patch_win,
+                    search=patch_search,
+                    interp_method="rbf",
+                    centers=centers,
+                    mode="robust",
+                )
+            else:
+                pts_ref_raw, pts_def_raw, scores_raw = big_motion_sparse_matches(
+                    im_ref,
+                    im_def,
+                    K=n_patches,
+                    win=patch_win,
+                    search=patch_search,
+                    mode="robust",
+                )
 
         if pts_ref_raw.shape[0] == 0:
             raise ValueError("No sparse matches could be extracted from the images.")
@@ -586,7 +637,7 @@ class Dic():
         # Fit the requested global transform on all inliers (plain least squares).
         model_robust = Model()
         model_robust.estimate(pts_ref_in, pts_def_in)
-
+        print(f"pts_ref_in shape: {pts_ref_in.shape}")
         if pts_ref_in.shape[0] < 3:
             # Not enough inliers: keep a constant displacement equal to the mean.
             mean_disp = (pts_def_in - pts_ref_in).mean(axis=0)
@@ -613,12 +664,14 @@ class Dic():
             except Exception:
                 # If the RBF solve fails, revert to the mean displacement.
                 mean_disp = disp_in.mean(axis=0)
+                print(f"RBF interpolation failed; using mean displacement: {mean_disp}")
 
                 def interp_fn(xy):
                     q = np.atleast_2d(xy)
                     return np.repeat(mean_disp[None, :], q.shape[0], axis=0)
 
         disp_guess = interp_fn(nodes)
+        print(f"disp_guess shape: {disp_guess.shape}")
         extras = {
             "model": model_robust,
             "pts_ref": pts_ref_in,
@@ -628,20 +681,21 @@ class Dic():
             "raw_pts_def": pts_def_raw,
             "raw_scores": scores_raw,
             "rbf_interpolator": interp_fn,
-            "used_element_centers": use_element_centers,
+            "used_element_centers": used_elem_centers_flag,
             "element_stride": stride,
+            "match_mode": match_mode,
         }
         if centers_used is not None:
             extras["element_centers"] = centers_used
 
-        if refine and pts_ref_in.shape[0] > 0:
-            pts_def_pred = model_robust(pts_ref_in)
-            subpix = refine_matches_ncc(im_ref, im_def, pts_ref_in, pts_def_pred, win=win, search=search)
-            extras["subpixel_offsets"] = subpix
-            if subpix.size:
-                offset = np.median(subpix, axis=0)
-                disp_guess = disp_guess + offset
-
+        # if refine and pts_ref_in.shape[0] > 0:
+        #     pts_def_pred = model_robust(pts_ref_in)
+        #     subpix = refine_matches_ncc(im_ref, im_def, pts_ref_in, pts_def_pred, win=win, search=search)
+        #     extras["subpixel_offsets"] = subpix
+        #     if subpix.size:
+        #         offset = np.median(subpix, axis=0)
+        #         disp_guess = disp_guess + offset
+        
         return jnp.asarray(disp_guess), extras
 
     # API_CANDIDATE

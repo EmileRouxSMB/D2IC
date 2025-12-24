@@ -1,352 +1,311 @@
-"""Turn binary ROI masks into quad meshes through the Gmsh Python API.
-
-We read an ROI, extract white regions with OpenCV, rebuild the curve network,
-and let Gmsh recombine triangles into quads when requested.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Tuple, Sequence
+import os
+import tempfile
 
-import cv2
-import gmsh
 import numpy as np
 
+try:  # pragma: no cover
+    import jax.numpy as jnp
+    _ARRAY_LIB = jnp
+except Exception:  # pragma: no cover
+    _ARRAY_LIB = np
 
-@dataclass
-class RoiMeshConfig:
-    """Holds the geometry/meshing knobs used by :class:`RoiMeshGenerator`.
-
-    Attributes
-    ----------
-    image_path:
-        ROI image where white pixels mark the area to mesh.
-    element_size:
-        Target spacing assigned to all generated Gmsh points.
-    threshold:
-        Grayscale cutoff that separates foreground/background.
-    approx_tolerance:
-        Relative tolerance passed to ``cv2.approxPolyDP``.
-    recombine:
-        Let Gmsh recombine triangles into quads when ``True``.
-    corner_angle_deg:
-        Minimum deviation from a straight angle to treat a point as a corner.
-    line_deviation_factor:
-        Allowed offset from the best fitting line, relative to ``element_size``.
-    arc_fit_tolerance:
-        Max RMS misfit between sampled points and their fitted circle (fraction of radius).
-    min_arc_angle_deg:
-        Smallest arc span we keep when deciding between arcs and splines.
-    """
-
-    image_path: Path
-    element_size: float
-    threshold: int = 127
-    approx_tolerance: float = 10.0e-3
-    recombine: bool = True
-    corner_angle_deg: float = 25.0
-    line_deviation_factor: float = 0.15
-    arc_fit_tolerance: float = 0.02
-    min_arc_angle_deg: float = 10.0
+from .mesh_assets import Mesh, MeshAssets, compute_element_centers, make_mesh_assets
 
 
-class _PointManager:
-    """Caches Gmsh point tags so shared vertices stay consistent."""
-
-    def __init__(self, element_size: float) -> None:
-        self.element_size = element_size
-        self._cache: Dict[Tuple[float, float], int] = {}
-
-    def tag(self, point: np.ndarray | Iterable[float]) -> int:
-        coords = tuple(float(coord) for coord in point)
-        if len(coords) != 2:
-            raise ValueError("2D points are required to build the mesh edges.")
-        x, y = coords
-        key = (x, y)
-        if key not in self._cache:
-            self._cache[key] = gmsh.model.geo.addPoint(x, y, 0.0, self.element_size)
-        return self._cache[key]
-
-    def auxiliary(self, point: np.ndarray | Iterable[float]) -> int:
-        coords = tuple(float(coord) for coord in point)
-        if len(coords) != 2:
-            raise ValueError("2D points are required to build the mesh edges.")
-        x, y = coords
-        return gmsh.model.geo.addPoint(x, y, 0.0, self.element_size)
+def downsample_mask(mask: np.ndarray, binning: int) -> np.ndarray:
+    mask = np.asarray(mask, dtype=bool)
+    if binning <= 1:
+        return mask
+    h, w = mask.shape
+    pad_h = (-h) % binning
+    pad_w = (-w) % binning
+    if pad_h or pad_w:
+        mask = np.pad(mask, ((0, pad_h), (0, pad_w)), mode="constant", constant_values=False)
+    new_h = mask.shape[0] // binning
+    new_w = mask.shape[1] // binning
+    reshaped = mask.reshape(new_h, binning, new_w, binning)
+    return np.any(reshaped, axis=(1, 3))
 
 
-class RoiMeshGenerator:
-    """Builds a conforming quad-dominant mesh from a binary ROI mask."""
+def mask_to_mesh(
+    mask: np.ndarray,
+    element_size_px: float,
+    binning: int = 1,
+    origin_xy: Tuple[float, float] = (0.0, 0.0),
+    enforce_quads: bool = True,
+    remove_islands: bool = True,
+    min_island_area_px: int = 64,
+) -> Mesh:
+    if not enforce_quads:
+        raise NotImplementedError("Only quadrilateral meshes are supported at the moment.")
+    if element_size_px <= 0:
+        raise ValueError("element_size_px must be positive")
 
-    def __init__(self, config: RoiMeshConfig) -> None:
-        self.config = config
-        self._curve_loops: Dict[int, int] = {}
-        self._surface_tags: List[int] = []
+    mask_bool = np.asarray(mask, dtype=bool)
+    if remove_islands:
+        mask_bool = _remove_small_components(mask_bool, min_island_area_px)
+    mask_ds = downsample_mask(mask_bool, binning)
+    if not np.any(mask_ds):
+        raise ValueError("mask_to_mesh: no ROI pixels remain after preprocessing.")
 
-    def generate(self, msh_path: Optional[Path] = None) -> Optional[Path]:
-        """Run the full pipeline and optionally dump a ``.msh`` file."""
+    step = max(1, int(round(element_size_px / max(1, binning))))
+    h, w = mask_ds.shape
+    grid_x = _build_axis_coords(w, step)
+    grid_y = _build_axis_coords(h, step)
+    nx = grid_x.size
+    ny = grid_y.size
 
-        gmsh.initialize()
-        try:
-            gmsh.model.add("roi_mesh")
-            self._build_geometry()
-            gmsh.model.geo.synchronize()
+    meshgrid = np.stack(np.meshgrid(grid_x, grid_y), axis=-1).reshape(-1, 2)
+    node_coords = meshgrid.astype(np.float64)
+    node_coords[:, 0] = origin_xy[0] + node_coords[:, 0] * binning
+    node_coords[:, 1] = origin_xy[1] + node_coords[:, 1] * binning
 
-            if self.config.recombine:
-                gmsh.option.setNumber("Mesh.RecombineAll", 1)
-
-            gmsh.model.mesh.generate(2)
-            gmsh.model.addPhysicalGroup(2, self._surface_tags, 1)
-            gmsh.model.setPhysicalName(2, 1, "ROI")
-
-            if msh_path is not None:
-                gmsh.write(str(msh_path))
-                return msh_path
-            return None
-        finally:
-            gmsh.finalize()
-
-    # Geometry assembly --------------------------------------------------
-    def _build_geometry(self) -> None:
-        self._curve_loops.clear()
-        self._surface_tags.clear()
-
-        mask = self._load_binary_mask()
-        contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-
-        if not contours:
-            raise ValueError("No white regions were found in the provided ROI image.")
-        if hierarchy is None:
-            raise ValueError("Contour hierarchy is missing; cannot build curve nesting.")
-
-        hierarchy = hierarchy[0]
-        depth_cache: Dict[int, int] = {}
-
-        for idx, contour in enumerate(contours):
-            loop_tag = self._add_curve_loop(self._simplify(contour))
-            self._curve_loops[idx] = loop_tag
-            depth_cache[idx] = self._depth(idx, hierarchy, depth_cache)
-
-        for idx, loop_tag in self._curve_loops.items():
-            if depth_cache[idx] % 2 != 0:
+    elements = []
+    for iy in range(ny - 1):
+        for ix in range(nx - 1):
+            cx = 0.5 * (grid_x[ix] + grid_x[ix + 1])
+            cy = 0.5 * (grid_y[iy] + grid_y[iy + 1])
+            mx = min(int(round(cx)), w - 1)
+            my = min(int(round(cy)), h - 1)
+            if not mask_ds[my, mx]:
                 continue
-            hole_loops = [self._curve_loops[ch] for ch in self._children(idx, hierarchy)]
-            surface = gmsh.model.geo.addPlaneSurface([loop_tag, *hole_loops])
-            self._surface_tags.append(surface)
+            n0 = iy * nx + ix
+            n1 = n0 + 1
+            n2 = n0 + nx + 1
+            n3 = n0 + nx
+            elements.append([n0, n1, n2, n3])
 
-    def _load_binary_mask(self) -> np.ndarray:
-        image = cv2.imread(str(self.config.image_path), cv2.IMREAD_UNCHANGED)
-        if image is None:
-            raise FileNotFoundError(f"Cannot read ROI image at {self.config.image_path}")
+    if not elements:
+        raise ValueError("mask_to_mesh: no elements found inside the ROI.")
 
-        if image.ndim == 3:
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    nodes_array = _ARRAY_LIB.asarray(node_coords)
+    elements_array = _ARRAY_LIB.asarray(np.asarray(elements, dtype=np.int32))
+    _sanity_check_mesh(nodes_array, elements_array)
+    return Mesh(nodes_xy=nodes_array, elements=elements_array)
 
-        _, mask = cv2.threshold(image, self.config.threshold, 255, cv2.THRESH_BINARY)
+
+def mask_to_mesh_assets(**kwargs) -> tuple[Mesh, MeshAssets]:
+    mesh = mask_to_mesh(**kwargs)
+    centers = compute_element_centers(mesh)
+    assets = MeshAssets(mesh=mesh, element_centers_xy=centers, pixel_data=None)
+    return mesh, assets
+
+
+def mask_to_mesh_gmsh(
+    mask: np.ndarray,
+    element_size_px: float,
+    binning: int = 1,
+    origin_xy: Tuple[float, float] = (0.0, 0.0),
+    contour_step_px: float = 2.0,
+    remove_islands: bool = True,
+    min_island_area_px: int = 64,
+) -> Mesh:
+    """
+    Generate a quad mesh with Gmsh from a binary ROI mask.
+
+    Parameters mirror ``mask_to_mesh`` but the meshing is performed via the
+    Gmsh Python API followed by ``meshio`` import, enabling more robust
+    boundary handling in stage-2 workflows.
+    """
+    try:
+        import gmsh  # type: ignore
+        import meshio  # type: ignore
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError("mask_to_mesh_gmsh requires gmsh and meshio packages.") from exc
+
+    mask_bool = np.asarray(mask, dtype=bool)
+    if remove_islands:
+        mask_bool = _remove_small_components(mask_bool, min_island_area_px)
+    mask_ds = downsample_mask(mask_bool, binning)
+    if not np.any(mask_ds):
+        raise ValueError("mask_to_mesh_gmsh: no ROI pixels remain after preprocessing.")
+
+    contours = _extract_contours(mask_ds, contour_step_px=contour_step_px, binning=binning)
+    if not contours:
+        ys, xs = np.nonzero(mask_ds)
+        if ys.size == 0:
+            raise ValueError("mask_to_mesh_gmsh: could not extract ROI contours from mask.")
+        y0 = ys.min()
+        y1 = ys.max()
+        x0 = xs.min()
+        x1 = xs.max()
+        rect = np.array(
+            [
+                [x0 * binning, y0 * binning],
+                [x1 * binning, y0 * binning],
+                [x1 * binning, y1 * binning],
+                [x0 * binning, y1 * binning],
+                [x0 * binning, y0 * binning],
+            ],
+            dtype=float,
+        )
+        contours = [rect]
+
+    tmp_path = None
+    gmsh.initialize([])
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        model_name = "mask_roi"
+        gmsh.model.add(model_name)
+        curve_loops: list[int] = []
+        major_loop: int | None = None
+        for idx, contour in enumerate(contours):
+            if contour.shape[0] < 4:
+                continue
+            coords = np.column_stack(
+                [
+                    origin_xy[0] + contour[:, 0],
+                    origin_xy[1] + contour[:, 1],
+                ]
+            )
+            area = _signed_area(coords)
+            if np.isclose(area, 0.0):
+                continue
+            if area < 0.0:
+                coords = coords[::-1]
+
+            point_tags: list[int] = []
+            for (x, y) in coords:
+                tag = gmsh.model.geo.addPoint(float(x), float(y), 0.0, element_size_px)
+                point_tags.append(tag)
+            if point_tags[0] != point_tags[-1]:
+                point_tags.append(point_tags[0])
+            spline = gmsh.model.geo.addSpline(point_tags)
+            loop = gmsh.model.geo.addCurveLoop([spline])
+            if idx == 0:
+                major_loop = loop
+            else:
+                curve_loops.append(loop)
+
+        if major_loop is None:
+            raise ValueError("mask_to_mesh_gmsh: unable to build outer loop from mask contours.")
+
+        surface = gmsh.model.geo.addPlaneSurface([major_loop] + [-loop for loop in curve_loops])
+        gmsh.model.geo.synchronize()
+
+        gmsh.option.setNumber("Mesh.MeshSizeMin", element_size_px)
+        gmsh.option.setNumber("Mesh.MeshSizeMax", element_size_px)
+        gmsh.option.setNumber("Mesh.RecombineAll", 1)
+        gmsh.model.mesh.setRecombine(2, surface)
+        gmsh.model.mesh.generate(2)
+        gmsh.model.mesh.optimize("Netgen")
+
+        fd, tmp_path = tempfile.mkstemp(suffix=".msh")
+        os.close(fd)
+        gmsh.write(tmp_path)
+    finally:
+        gmsh.finalize()
+
+    try:
+        gmsh_mesh = meshio.read(tmp_path)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+    if "quad" not in gmsh_mesh.cells_dict:
+        raise ValueError(
+            "mask_to_mesh_gmsh: gmsh did not produce quadrilateral elements. "
+            "Ensure Mesh.RecombineAll=1 succeeds for the ROI."
+        )
+
+    nodes_xy = gmsh_mesh.points[:, :2]
+    elements = gmsh_mesh.cells_dict["quad"].astype(np.int32)
+    nodes_array = _ARRAY_LIB.asarray(nodes_xy)
+    elements_array = _ARRAY_LIB.asarray(elements)
+    return Mesh(nodes_xy=nodes_array, elements=elements_array)
+
+
+def mask_to_mesh_assets_gmsh(**kwargs) -> tuple[Mesh, MeshAssets]:
+    mesh = mask_to_mesh_gmsh(**kwargs)
+    assets = make_mesh_assets(mesh, with_neighbors=True)
+    return mesh, assets
+
+
+def _build_axis_coords(size: int, step: int) -> np.ndarray:
+    count = max(2, int(np.floor((size - 1) / step)) + 1)
+    coords = np.arange(count, dtype=np.float64) * step
+    last_val = coords[-1]
+    if last_val < size - 1:
+        coords = np.append(coords, size - 1)
+    return coords
+
+
+def _remove_small_components(mask: np.ndarray, min_area: int) -> np.ndarray:
+    mask = np.asarray(mask, dtype=bool)
+    h, w = mask.shape
+    labels = -np.ones_like(mask, dtype=np.int32)
+    area = []
+    label = 0
+    for y in range(h):
+        for x in range(w):
+            if not mask[y, x] or labels[y, x] != -1:
+                continue
+            stack = [(y, x)]
+            labels[y, x] = label
+            count = 0
+            while stack:
+                cy, cx = stack.pop()
+                count += 1
+                for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+                    if 0 <= ny < h and 0 <= nx < w and mask[ny, nx] and labels[ny, nx] == -1:
+                        labels[ny, nx] = label
+                        stack.append((ny, nx))
+            area.append(count)
+            label += 1
+
+    if label == 0:
         return mask
 
-    def _simplify(self, contour: np.ndarray) -> np.ndarray:
-        perimeter = cv2.arcLength(contour, True)
-        epsilon = self.config.approx_tolerance * perimeter
-        simplified = cv2.approxPolyDP(contour, epsilon, True)
-        if simplified.shape[0] < 3:
-            raise ValueError("Encountered a degenerate contour while simplifying the ROI.")
-        return simplified.reshape(-1, 2).astype(float)
-
-    def _segment_points(self, points: np.ndarray) -> List[np.ndarray]:
-        if len(points) < 2:
-            raise ValueError("Contours must contain at least two points to form a loop.")
-
-        n_points = len(points)
-        raw_corners = self._detect_corners(points)
-        if len(raw_corners) < 2:
-            step = max(1, n_points // 4)
-            raw_corners = list(range(0, n_points, step))
-        if not raw_corners:
-            raw_corners = [0]
-
-        corner_indices = sorted({idx % n_points for idx in raw_corners})
-        if 0 not in corner_indices:
-            corner_indices.insert(0, 0)
-        if len(corner_indices) < 2:
-            second = (corner_indices[0] + max(1, n_points // 3)) % n_points
-            if second == corner_indices[0]:
-                second = (corner_indices[0] + 1) % n_points
-            corner_indices.append(second)
-
-        wrap_indices = corner_indices + [corner_indices[0] + n_points]
-        segments: List[np.ndarray] = []
-        for start, end in zip(wrap_indices[:-1], wrap_indices[1:]):
-            length = end - start
-            if length <= 0:
-                continue
-            segment_points = [points[(start + offset) % n_points] for offset in range(length + 1)]
-            segments.append(np.array(segment_points, dtype=float))
-        return segments
-
-    def _detect_corners(self, points: np.ndarray) -> List[int]:
-        n_points = len(points)
-        if n_points < 3:
-            return list(range(n_points))
-
-        corners: List[int] = []
-        angle_threshold = np.deg2rad(self.config.corner_angle_deg)
-        for idx in range(n_points):
-            prev_pt = points[idx - 1]
-            curr_pt = points[idx]
-            next_pt = points[(idx + 1) % n_points]
-            v1 = prev_pt - curr_pt
-            v2 = next_pt - curr_pt
-            norm1 = np.linalg.norm(v1)
-            norm2 = np.linalg.norm(v2)
-            if norm1 < 1.0e-9 or norm2 < 1.0e-9:
-                continue
-            cos_angle = np.clip(np.dot(v1, v2) / (norm1 * norm2), -1.0, 1.0)
-            angle = np.arccos(cos_angle)
-            deviation = abs(np.pi - angle)
-            if deviation >= angle_threshold:
-                corners.append(idx)
-        return corners
-
-    def _build_curves_for_segment(
-        self, segment: np.ndarray, point_manager: _PointManager
-    ) -> List[int]:
-        clean_segment = self._deduplicate_segment(segment)
-        if len(clean_segment) < 2:
-            return []
-
-        if self._is_line(clean_segment):
-            start_tag = point_manager.tag(clean_segment[0])
-            end_tag = point_manager.tag(clean_segment[-1])
-            return [gmsh.model.geo.addLine(start_tag, end_tag)]
-
-        arc_center = self._fit_arc(clean_segment)
-        if arc_center is not None:
-            start_tag = point_manager.tag(clean_segment[0])
-            end_tag = point_manager.tag(clean_segment[-1])
-            center_tag = point_manager.auxiliary(arc_center)
-            return [gmsh.model.geo.addCircleArc(start_tag, center_tag, end_tag)]
-
-        point_tags = [point_manager.tag(point) for point in clean_segment]
-        return [gmsh.model.geo.addSpline(point_tags)]
-
-    def _deduplicate_segment(self, segment: np.ndarray) -> np.ndarray:
-        unique_points = [segment[0]]
-        for point in segment[1:]:
-            if np.linalg.norm(point - unique_points[-1]) > 1.0e-9:
-                unique_points.append(point)
-        if len(unique_points) > 1 and np.linalg.norm(unique_points[0] - unique_points[-1]) < 1.0e-9:
-            unique_points.pop()
-        return np.array(unique_points, dtype=float)
-
-    def _is_line(self, segment: np.ndarray) -> bool:
-        if len(segment) <= 2:
-            return True
-        start = segment[0]
-        end = segment[-1]
-        vec = end - start
-        length = np.linalg.norm(vec)
-        if length < 1.0e-9:
-            return False
-        normal = np.array([-vec[1], vec[0]]) / length
-        deviations = np.abs(np.dot(segment - start, normal))
-        max_allowed = self.config.line_deviation_factor * self.config.element_size
-        return float(np.max(deviations)) <= max_allowed
-
-    def _fit_arc(self, segment: np.ndarray) -> Optional[np.ndarray]:
-        if len(segment) < 3:
-            return None
-        circle = self._fit_circle(segment)
-        if circle is None:
-            return None
-        center, radius, residual = circle
-        if radius < 1.0e-6:
-            return None
-        if residual > self.config.arc_fit_tolerance * radius:
-            return None
-        start_vec = segment[0] - center
-        end_vec = segment[-1] - center
-        start_norm = np.linalg.norm(start_vec)
-        end_norm = np.linalg.norm(end_vec)
-        if start_norm < 1.0e-9 or end_norm < 1.0e-9:
-            return None
-        cos_angle = np.clip(np.dot(start_vec, end_vec) / (start_norm * end_norm), -1.0, 1.0)
-        angle = np.arccos(cos_angle)
-        if angle < np.deg2rad(self.config.min_arc_angle_deg):
-            return None
-        return center
-
-    def _fit_circle(self, segment: np.ndarray) -> Optional[Tuple[np.ndarray, float, float]]:
-        x = segment[:, 0]
-        y = segment[:, 1]
-        a_matrix = np.column_stack((2 * x, 2 * y, np.ones_like(x)))
-        b_vector = x ** 2 + y ** 2
-        try:
-            solution, *_ = np.linalg.lstsq(a_matrix, b_vector, rcond=None)
-        except np.linalg.LinAlgError:
-            return None
-        cx, cy, c = solution
-        radius_sq = cx ** 2 + cy ** 2 + c
-        if radius_sq <= 0:
-            return None
-        center = np.array([cx, cy])
-        radius = float(np.sqrt(radius_sq))
-        distances = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
-        residual = float(np.sqrt(np.mean((distances - radius) ** 2)))
-        return center, radius, residual
-
-    def _add_curve_loop(self, points: np.ndarray) -> int:
-        point_manager = _PointManager(self.config.element_size)
-        segments = self._segment_points(points)
-        curves: List[int] = []
-        for segment in segments:
-            curves.extend(self._build_curves_for_segment(segment, point_manager))
-        if not curves:
-            raise ValueError("Failed to generate curves for the provided contour.")
-        return gmsh.model.geo.addCurveLoop(curves)
-
-    def _children(self, idx: int, hierarchy: np.ndarray) -> Iterable[int]:
-        child = hierarchy[idx][2]
-        while child != -1:
-            yield child
-            child = hierarchy[child][0]
-
-    def _depth(
-        self, idx: int, hierarchy: np.ndarray, cache: Dict[int, int]
-    ) -> int:
-        parent = hierarchy[idx][3]
-        if parent == -1:
-            cache[idx] = 0
-            return 0
-        if parent in cache:
-            cache[idx] = cache[parent] + 1
-            return cache[idx]
-        cache[parent] = self._depth(parent, hierarchy, cache)
-        cache[idx] = cache[parent] + 1
-        return cache[idx]
+    area = np.asarray(area)
+    keep = area >= max(1, min_area)
+    result = np.zeros_like(mask)
+    for idx, flag in enumerate(keep):
+        if flag:
+            result |= labels == idx
+    return result
 
 
-def generate_roi_mesh(
-    image_path: str | Path,
-    element_size: float,
-    msh_path: Optional[str] = None,
-    approx_tolerance: float = 10.0e-3,
-) -> Optional[Path]:
-    """One-shot helper: read ``image_path``, mesh white pixels, optionally save ``msh_path``.
-
-    ``element_size`` sets the target spacing; ``approx_tolerance`` goes to ``cv2.approxPolyDP``.
-    """
-
-    config = RoiMeshConfig(
-        image_path=Path(image_path),
-        element_size=element_size,
-        approx_tolerance=approx_tolerance,
-    )
-    generator = RoiMeshGenerator(config)
-    return generator.generate(Path(msh_path) if msh_path else None)
+def _sanity_check_mesh(nodes: Array, elements: Array) -> None:
+    if np.isnan(np.asarray(nodes)).any():
+        raise ValueError("Mesh nodes contain NaNs")
+    max_index = nodes.shape[0] - 1
+    elem = np.asarray(elements)
+    if elem.size == 0 or elem.shape[1] != 4:
+        raise ValueError("Elements must be quad connectivity")
+    if np.any(elem < 0) or np.any(elem > max_index):
+        raise ValueError("Element connectivity out of bounds")
 
 
-if __name__ == "__main__":
-    generate_roi_mesh(Path("../../SandBox/roiB.tif"), element_size=40.0, msh_path="../../SandBox/roi.msh")
+def _extract_contours(mask: np.ndarray, contour_step_px: float, binning: int) -> list[np.ndarray]:
+    try:
+        from skimage import measure  # type: ignore
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError("mask_to_mesh_gmsh requires scikit-image for contour extraction.") from exc
+
+    mask_float = mask.astype(float)
+    contours = measure.find_contours(mask_float, 0.5)
+    if not contours:
+        return []
+    stride = max(1, int(round(max(1.0, contour_step_px) / max(1, binning))))
+    processed: list[np.ndarray] = []
+    for contour in contours:
+        pts = contour[::stride]
+        if pts.shape[0] < 4:
+            continue
+        # convert (row, col) -> (x, y) with scaling by binning
+        xy = np.column_stack([pts[:, 1] * binning, pts[:, 0] * binning])
+        processed.append(xy)
+    processed.sort(key=lambda arr: abs(_signed_area(arr)), reverse=True)
+    return processed
+
+
+def _signed_area(coords: np.ndarray) -> float:
+    if len(coords) < 3:
+        return 0.0
+    x = coords[:, 0]
+    y = coords[:, 1]
+    return 0.5 * float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))

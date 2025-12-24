@@ -3,10 +3,103 @@ import jax.numpy as jnp
 from jax import lax, vmap
 from jax import jit
 import numpy as np
-from matplotlib.path import Path
+from functools import partial
 
 
 from  dm_pix import flat_nd_linear_interpolate
+
+
+@partial(jax.jit, static_argnames=("chunk_size",))
+def _points_in_convex_quad_chunk(points_chunk, quad_nodes, active_mask, tol, chunk_size=4096):
+    """Return inside mask for a padded chunk of points against a convex quad."""
+    pts = jnp.asarray(points_chunk)
+    quad = jnp.asarray(quad_nodes)
+    active_mask = jnp.asarray(active_mask, dtype=jnp.bool_)
+
+    edges = jnp.roll(quad, -1, axis=0) - quad
+    quad_next = jnp.roll(quad, -1, axis=0)
+    area2 = jnp.sum(quad[:, 0] * quad_next[:, 1] - quad[:, 1] * quad_next[:, 0])
+    orientation = jnp.where(area2 >= 0.0, 1.0, -1.0)
+
+    def inside(point):
+        vec = point - quad
+        cross = edges[:, 0] * vec[:, 1] - edges[:, 1] * vec[:, 0]
+        return jnp.all(orientation * cross >= -tol)
+
+    inside_vals = jax.vmap(inside)(pts)
+    return jnp.where(active_mask, inside_vals, False)
+
+
+def points_in_convex_quad(points, quad_nodes, chunk_size=4096, tol=1e-6):
+    """Vectorized convex-quad point-in-polygon test implemented with JAX."""
+    pts = np.asarray(points, dtype=np.float32)
+    quad = np.asarray(quad_nodes, dtype=np.float32)
+    if pts.size == 0:
+        return np.zeros(0, dtype=bool)
+
+    n = pts.shape[0]
+    inside = np.zeros(n, dtype=bool)
+    for start in range(0, n, chunk_size):
+        chunk = pts[start : start + chunk_size]
+        cur = chunk.shape[0]
+        if cur < chunk_size:
+            pad_chunk = np.pad(chunk, ((0, chunk_size - cur), (0, 0)), mode="edge")
+            mask = np.zeros(chunk_size, dtype=bool)
+            mask[:cur] = True
+        else:
+            pad_chunk = chunk
+            mask = np.ones(chunk_size, dtype=bool)
+        res = _points_in_convex_quad_chunk(
+            pad_chunk,
+            quad,
+            mask,
+            tol,
+            chunk_size=chunk_size,
+        )
+        inside[start : start + chunk_size] = np.asarray(res)[:cur]
+    return inside
+
+
+@partial(jax.jit, static_argnames=("n_nodes", "max_deg"))
+def _build_node_neighbor_dense_from_edges_jax(src_flat, dst_flat, nodes_coord, n_nodes, max_deg):
+    """JAX-accelerated construction of dense neighbor data from explicit edge lists."""
+    nodes_coord = jnp.asarray(nodes_coord)
+    src_flat = jnp.asarray(src_flat, dtype=jnp.int32)
+    dst_flat = jnp.asarray(dst_flat, dtype=jnp.int32)
+    if src_flat.size == 0 or max_deg == 0:
+        node_neighbor_index = jnp.full((n_nodes, 0), -1, dtype=jnp.int32)
+        node_neighbor_degree = jnp.zeros((n_nodes,), dtype=jnp.int32)
+        node_neighbor_weight = jnp.zeros((n_nodes, 0), dtype=nodes_coord.dtype)
+        return node_neighbor_index, node_neighbor_degree, node_neighbor_weight
+
+    adj = jnp.zeros((n_nodes, n_nodes), dtype=jnp.bool_)
+    adj = adj.at[src_flat, dst_flat].set(True)
+
+    xi = nodes_coord[src_flat, :2]
+    xj = nodes_coord[dst_flat, :2]
+    dist = jnp.linalg.norm(xj - xi, axis=1)
+    weight_vals = 1.0 / (dist + 1e-6)
+    weight_matrix = jnp.zeros((n_nodes, n_nodes), dtype=nodes_coord.dtype)
+    weight_matrix = weight_matrix.at[src_flat, dst_flat].set(weight_vals)
+
+    node_neighbor_degree = jnp.sum(adj.astype(jnp.int32), axis=1)
+
+    def process_row(row_mask, row_weight, degree):
+        values = jnp.where(row_mask, 1.0, 0.0)
+        _, idx = lax.top_k(values, max_deg)
+        idx = idx.astype(jnp.int32)
+        valid_slots = jnp.arange(max_deg, dtype=jnp.int32) < degree
+        gather_idx = jnp.clip(idx, 0)
+        weights = row_weight[gather_idx]
+        weights = jnp.where(valid_slots, weights, 0.0)
+        idx = jnp.where(valid_slots, idx, -1)
+        return idx, weights
+
+    node_neighbor_index, node_neighbor_weight = jax.vmap(process_row)(
+        adj, weight_matrix, node_neighbor_degree
+    )
+
+    return node_neighbor_index, node_neighbor_degree, node_neighbor_weight
 
 
 def build_node_neighbor_dense(elements, nodes_coord, n_nodes):
@@ -14,40 +107,31 @@ def build_node_neighbor_dense(elements, nodes_coord, n_nodes):
 
     Returns ``(node_neighbor_index, node_neighbor_degree, node_neighbor_weight)`` with weights ``1 / ||xi - xj||``.
     """
-    # Collect neighbor sets per node.
-    neigh_sets = [set() for _ in range(n_nodes)]
-    for elt in elements:
-        elt = np.asarray(elt, dtype=int)
-        for a in range(4):
-            i = int(elt[a])
-            for b in range(4):
-                if b == a:
-                    continue
-                j = int(elt[b])
-                neigh_sets[i].add(j)
+    elements_np = np.asarray(elements, dtype=int)
+    nodes_coord_np = np.asarray(nodes_coord)
+    n_nodes = int(n_nodes)
+    if elements_np.size == 0:
+        zero_idx = jnp.full((n_nodes, 0), -1, dtype=jnp.int32)
+        zero_deg = jnp.zeros((n_nodes,), dtype=jnp.int32)
+        zero_w = jnp.zeros((n_nodes, 0), dtype=nodes_coord_np.dtype)
+        return zero_idx, zero_deg, zero_w
 
-    degrees = [len(s) for s in neigh_sets]
-    max_deg = max(degrees) if degrees else 0
+    n_local = elements_np.shape[1]
+    idx = np.arange(n_local, dtype=int)
+    src_idx = np.repeat(idx, n_local)
+    dst_idx = np.tile(idx, n_local)
+    mask = src_idx != dst_idx
+    src_idx = src_idx[mask]
+    dst_idx = dst_idx[mask]
+    src_flat = elements_np[:, src_idx].reshape(-1)
+    dst_flat = elements_np[:, dst_idx].reshape(-1)
 
-    node_neighbor_index  = np.full((n_nodes, max_deg), -1, dtype=int)
-    node_neighbor_degree = np.asarray(degrees, dtype=int)
-    node_neighbor_weight = np.zeros((n_nodes, max_deg), dtype=float)
+    adj = np.zeros((n_nodes, n_nodes), dtype=bool)
+    adj[src_flat, dst_flat] = True
+    degrees = adj.sum(axis=1)
+    max_deg = int(degrees.max(initial=0))
 
-    # Fill the dense arrays and assign weights ~ 1 / ||x_i - x_j||.
-    for i in range(n_nodes):
-        if degrees[i] == 0:
-            continue
-        neigh_i = np.asarray(sorted(neigh_sets[i]), dtype=int)
-        node_neighbor_index[i, :degrees[i]] = neigh_i
-
-        xi = nodes_coord[i, :2]  # (2,)
-        xj = nodes_coord[neigh_i, :2]  # (deg_i,2)
-        dist = np.linalg.norm(xj - xi[None, :], axis=1)
-        # small epsilon to avoid dividing by zero
-        w = 1.0 / (dist + 1e-6)
-        node_neighbor_weight[i, :degrees[i]] = w
-
-    return node_neighbor_index, node_neighbor_degree, node_neighbor_weight
+    return _build_node_neighbor_dense_from_edges_jax(src_flat, dst_flat, nodes_coord_np, n_nodes, max_deg)
 
 
 def build_k_ring_neighbors(node_neighbor_index, node_neighbor_degree, k=2):
@@ -90,46 +174,54 @@ def build_k_ring_neighbors(node_neighbor_index, node_neighbor_degree, k=2):
     return neigh_index_k, neigh_degree_k
 
 
-def build_pixel_to_element_mapping_numpy(pixel_coords, nodes_coord, elements):
+def build_pixel_to_element_mapping_numpy(pixel_coords, nodes_coord, elements, chunk_size=4096):
     """Map each pixel to its containing quadrilateral and return the four local nodes."""
     Np = pixel_coords.shape[0]
     pixel_elts = -np.ones(Np, dtype=int)
     pixel_nodes = np.zeros((Np, 4), dtype=int)
 
-    # Precompute a Path and its bounding box for every element.
-    elt_paths = []
+    elements = np.asarray(elements, dtype=int)
+    nodes_coord = np.asarray(nodes_coord, dtype=float)
+    if elements.size == 0 or Np == 0:
+        return pixel_elts, pixel_nodes
+
+    # Precompute bounding boxes for quick rejection.
     elt_bboxes = []
     for e in elements:
         Xe = nodes_coord[e]  # (4,2)
-        path = Path(Xe)
-        elt_paths.append(path)
         xmin, ymin = Xe.min(axis=0)
         xmax, ymax = Xe.max(axis=0)
         elt_bboxes.append([xmin, xmax, ymin, ymax])
     elt_bboxes = np.asarray(elt_bboxes)
 
-    # Iterate per element (few) instead of per pixel (many).
-    for e, path in enumerate(elt_paths):
-        # Filter remaining pixels inside this element's bounding box.
+    for e, bbox in enumerate(elt_bboxes):
+        remaining = pixel_elts < 0
+        if not np.any(remaining):
+            break
         mask_bbox = (
-            (pixel_elts < 0)
-            & (pixel_coords[:, 0] >= elt_bboxes[e, 0])
-            & (pixel_coords[:, 0] <= elt_bboxes[e, 1])
-            & (pixel_coords[:, 1] >= elt_bboxes[e, 2])
-            & (pixel_coords[:, 1] <= elt_bboxes[e, 3])
+            remaining
+            & (pixel_coords[:, 0] >= bbox[0])
+            & (pixel_coords[:, 0] <= bbox[1])
+            & (pixel_coords[:, 1] >= bbox[2])
+            & (pixel_coords[:, 1] <= bbox[3])
         )
         if not np.any(mask_bbox):
             continue
 
-        inside = path.contains_points(pixel_coords[mask_bbox])
+        idx_candidates = np.nonzero(mask_bbox)[0]
+        pts = pixel_coords[idx_candidates]
+        quad_nodes = nodes_coord[elements[e]]
+        inside = points_in_convex_quad(
+            pts,
+            quad_nodes,
+            chunk_size=chunk_size,
+        )
         if not np.any(inside):
             continue
-
-        idx = np.nonzero(mask_bbox)[0][inside]
+        idx = idx_candidates[inside]
         pixel_elts[idx] = e
         pixel_nodes[idx] = elements[e]
 
-        # Stop once every pixel found an element.
         if np.all(pixel_elts >= 0):
             break
 
@@ -279,38 +371,54 @@ def J_pixelwise_core(displacement,
     return 0.5 * jnp.mean(r**2)
 
 
-def build_node_pixel_dense(pixel_nodes, pixel_shapeN, n_nodes):
-    """Dense node→pixel lookup storing indices, weights, and degrees."""
+@partial(jax.jit, static_argnames=("n_nodes", "max_deg"))
+def _build_node_pixel_dense_jax(pixel_nodes, pixel_shapeN, n_nodes, max_deg):
+    """JAX helper that fills dense node→pixel CSR-like arrays."""
+    pixel_nodes = jnp.asarray(pixel_nodes, dtype=jnp.int32)
+    pixel_shapeN = jnp.asarray(pixel_shapeN)
+    if pixel_nodes.size == 0 or max_deg == 0:
+        node_pixel_index = jnp.full((n_nodes, 0), -1, dtype=jnp.int32)
+        node_N_weight = jnp.zeros((n_nodes, 0), dtype=pixel_shapeN.dtype)
+        node_degree = jnp.zeros((n_nodes,), dtype=jnp.int32)
+        return node_pixel_index, node_N_weight, node_degree
+
     Np = pixel_nodes.shape[0]
+    n_local = pixel_nodes.shape[1]
+    flat_nodes = pixel_nodes.reshape(-1)
+    flat_weights = pixel_shapeN.reshape(-1)
+    pixel_ids = jnp.repeat(jnp.arange(Np, dtype=jnp.int32), n_local)
 
-    # Gather contributing pixels per node.
-    per_node_pixels = [[] for _ in range(n_nodes)]
-    per_node_weights = [[] for _ in range(n_nodes)]
+    def body(counts, node):
+        idx = counts[node]
+        counts = counts.at[node].add(1)
+        return counts, idx
 
-    for p in range(Np):
-        for loc in range(4):
-            i = int(pixel_nodes[p, loc])
-            Ni = float(pixel_shapeN[p, loc])
-            per_node_pixels[i].append(p)
-            per_node_weights[i].append(Ni)
+    counts0 = jnp.zeros((n_nodes,), dtype=jnp.int32)
+    node_degree, slot_idx = lax.scan(body, counts0, flat_nodes)
 
-    # Find the largest degree to size the dense arrays.
-    degrees = [len(lst) for lst in per_node_pixels]
-    max_deg = max(degrees) if degrees else 0
-
-    # Populate the dense arrays.
-    node_pixel_index = np.full((n_nodes, max_deg), -1, dtype=int)
-    node_N_weight = np.zeros((n_nodes, max_deg), dtype=float)
-    node_degree = np.asarray(degrees, dtype=int)
-
-    for i in range(n_nodes):
-        deg_i = degrees[i]
-        if deg_i == 0:
-            continue
-        node_pixel_index[i, :deg_i] = np.asarray(per_node_pixels[i], dtype=int)
-        node_N_weight[i, :deg_i] = np.asarray(per_node_weights[i], dtype=float)
+    node_pixel_index = jnp.full((n_nodes, max_deg), -1, dtype=jnp.int32)
+    node_N_weight = jnp.zeros((n_nodes, max_deg), dtype=pixel_shapeN.dtype)
+    node_pixel_index = node_pixel_index.at[flat_nodes, slot_idx].set(pixel_ids)
+    node_N_weight = node_N_weight.at[flat_nodes, slot_idx].set(flat_weights)
 
     return node_pixel_index, node_N_weight, node_degree
+
+
+def build_node_pixel_dense(pixel_nodes, pixel_shapeN, n_nodes):
+    """Dense node→pixel lookup storing indices, weights, and degrees."""
+    pixel_nodes_np = np.asarray(pixel_nodes, dtype=int)
+    n_nodes = int(n_nodes)
+    if pixel_nodes_np.size == 0:
+        node_pixel_index = jnp.full((n_nodes, 0), -1, dtype=jnp.int32)
+        node_N_weight = jnp.zeros((n_nodes, 0), dtype=jnp.asarray(pixel_shapeN).dtype)
+        node_degree = jnp.zeros((n_nodes,), dtype=jnp.int32)
+        return node_pixel_index, node_N_weight, node_degree
+
+    flat_nodes = pixel_nodes_np.reshape(-1)
+    degrees = np.bincount(flat_nodes, minlength=n_nodes)
+    max_deg = int(degrees.max(initial=0))
+
+    return _build_node_pixel_dense_jax(pixel_nodes, pixel_shapeN, n_nodes, max_deg)
 
 
 @jax.jit

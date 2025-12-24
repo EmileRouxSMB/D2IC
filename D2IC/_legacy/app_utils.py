@@ -3,12 +3,78 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, List, Tuple
+from typing import Callable, List, Sequence, Tuple
 
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 from skimage.io import imread
+
+
+def _apply_binning(image: np.ndarray, factor: int) -> np.ndarray:
+    """Downsample ``image`` by averaging non-overlapping ``factor``×``factor`` blocks."""
+    factor = int(factor)
+    if factor <= 1:
+        return image
+    if image.ndim < 2:
+        raise ValueError("Binning expects at least 2D images.")
+    h, w = image.shape[:2]
+    new_h = (h // factor) * factor
+    new_w = (w // factor) * factor
+    if new_h == 0 or new_w == 0:
+        raise ValueError(f"Binning factor {factor} exceeds the image size {image.shape}.")
+    cropped = image[:new_h, :new_w, ...]
+    if cropped.ndim == 2:
+        reshaped = cropped.reshape(new_h // factor, factor, new_w // factor, factor)
+        binned = reshaped.mean(axis=(1, 3), dtype=cropped.dtype)
+    else:
+        c = cropped.shape[2]
+        reshaped = cropped.reshape(new_h // factor, factor, new_w // factor, factor, c)
+        binned = reshaped.mean(axis=(1, 3), dtype=cropped.dtype)
+    return binned.astype(image.dtype, copy=False)
+
+
+class LazyImageSequence(Sequence[np.ndarray]):
+    """Provide list-like access to TIFF frames without loading everything in memory."""
+
+    def __init__(
+        self,
+        paths: Sequence[Path],
+        dtype: np.dtype | type = np.float32,
+        binning: int = 1,
+    ) -> None:
+        self._paths = [Path(p) for p in paths]
+        self._dtype = np.dtype(dtype)
+        self._cache_idx: int | None = None
+        self._cache_img: np.ndarray | None = None
+        self._binning = int(binning)
+
+    def __len__(self) -> int:  # type: ignore[override]
+        return len(self._paths)
+
+    def _load_frame(self, idx: int) -> np.ndarray:
+        arr = imread(self._paths[idx]).astype(self._dtype, copy=False)
+        if self._binning > 1:
+            arr = _apply_binning(arr, self._binning).astype(self._dtype, copy=False)
+        # Keep a single-frame cache to avoid re-reading the same image multiple times.
+        self._cache_idx = idx
+        self._cache_img = arr
+        return arr
+
+    def __getitem__(self, item):  # type: ignore[override]
+        if isinstance(item, slice):
+            return [self[i] for i in range(*item.indices(len(self)))]
+
+        idx = int(item)
+        if idx < 0:
+            idx += len(self)
+        if idx < 0 or idx >= len(self):
+            raise IndexError(idx)
+
+        if self._cache_idx == idx and self._cache_img is not None:
+            return self._cache_img
+        return self._load_frame(idx)
+
 
 from . import generate_roi_mesh
 from .dic import Dic
@@ -70,7 +136,7 @@ def plot_field(
 def run_dic_sequence(
     dic: Dic,
     im_ref: np.ndarray,
-    images_def: List[np.ndarray],
+    images_def: Sequence[np.ndarray],
     disp_guess_first: np.ndarray | None = None,
     use_velocity: bool = True,
     vel_smoothing: float = 0.5,
@@ -193,6 +259,10 @@ def run_pipeline_sequence(
     frames_to_plot: List[int] | np.ndarray | None,
     plot_cmap: str,
     plot_alpha: float,
+    enable_initial_guess: bool = True,
+    image_binning: int = 1,
+    patch_search: int = 15,
+    initial_match_mode: str = "translation_zncc",
 ) -> Tuple[np.ndarray, np.ndarray]:
     """End-to-end pipeline: load data, mesh the ROI, run sequential DIC, and export fields/plots.
 
@@ -210,14 +280,19 @@ def run_pipeline_sequence(
     if not mask_path.exists():
         raise FileNotFoundError(f"ROI mask not found: {mask_path}")
 
-    im_ref = imread(im_ref_path).astype(float)
+    binning = int(image_binning)
+    if binning < 1:
+        raise ValueError("image_binning must be >= 1.")
+
+    im_ref = imread(im_ref_path).astype(np.float32, copy=False)
+    im_ref = _apply_binning(im_ref, binning).astype(np.float32, copy=False)
 
     all_imgs = sorted(img_dir.glob(image_pattern))
     im_def_paths = [p for p in all_imgs if p.name != im_ref_path.name]
     if len(im_def_paths) == 0:
         raise FileNotFoundError(f"No deformed image found in {img_dir} (pattern {image_pattern}).")
 
-    images_def = [imread(path).astype(float) for path in im_def_paths]
+    images_def = LazyImageSequence(im_def_paths, dtype=im_ref.dtype, binning=binning)
     n_frames = len(images_def)
     print(f"   - Reference image shape: {im_ref.shape}")
     print(f"   - {n_frames} deformed images detected: {[p.name for p in im_def_paths]}")
@@ -231,22 +306,36 @@ def run_pipeline_sequence(
 
     print("3) Create the Dic object and precompute pixel data")
     dic = Dic(mesh_path=str(mesh_path))
+    dic.binning = float(binning)
     dic.precompute_pixel_data(jnp.asarray(im_ref))
     n_nodes = int(dic.node_coordinates.shape[0])
     print(f"   - Number of nodes: {n_nodes}")
 
     print("4) Initial displacement (frame 0) from sparse correspondences")
-    disp_guess, extras = dic.compute_feature_disp_guess_big_motion(
-        im_ref,
-        images_def[0],
-        n_patches=32,
-        patch_win=21,
-        patch_search=15,
-        refine=True,
-        search_dilation=5.0,
-    )
-    print(f"   - {extras['pts_ref'].shape[0]} correspondences kept after RANSAC")
-    plot_sparse_matches(im_ref, images_def[0], extras, out_dir / "01_sparse_matches_first.png")
+    if enable_initial_guess:
+        try:
+            disp_guess, extras = dic.compute_feature_disp_guess_big_motion(
+                im_ref,
+                images_def[0],
+                n_patches=64,
+                patch_win=21,
+                patch_search=patch_search,
+                refine=True,
+                search_dilation=5.0,
+                use_element_centers=False,
+                initial_match_mode=initial_match_mode,
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                "Initial sparse matching failed; consider reducing PATCH_SEARCH, increasing IMAGE_BINNING, "
+                "or disabling ENABLE_INITIAL_GUESS. "
+                f"(binning={binning}, patch_win=21, patch_search={patch_search}, match_mode={initial_match_mode})"
+            ) from exc
+        print(f"   - {extras['pts_ref'].shape[0]} correspondences kept after RANSAC")
+        plot_sparse_matches(im_ref, images_def[0], extras, out_dir / "01_sparse_matches_first.png")
+    else:
+        disp_guess = np.zeros((n_nodes, 2), dtype=np.float32)
+        print("   - Initial sparse search disabled; starting from zero displacement.")
 
     print("5) Sequential global DIC (pixelwise CG + spring regularization)")
     frames_to_plot_arr = (
