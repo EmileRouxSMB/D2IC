@@ -8,15 +8,16 @@ from jax import lax
 import jax.numpy as jnp
 import numpy as np
 from functools import partial
+import warnings
 
 try:  # pragma: no cover - optional dependency for fast interpolation
     from dm_pix import flat_nd_linear_interpolate
 except Exception:  # pragma: no cover
     flat_nd_linear_interpolate = None
-try:  # pragma: no cover - optional scipy-based interpolation
-    from jax.scipy.ndimage import map_coordinates as _map_coordinates
+try:  # pragma: no cover - optional cubic interpolation
+    from im_jax import flat_nd_cubic_interpolate
 except Exception:  # pragma: no cover
-    _map_coordinates = None
+    flat_nd_cubic_interpolate = None
 
 from .solver_base import SolverBase
 from .types import Array
@@ -41,14 +42,22 @@ class LocalGaussNewtonSolver(SolverBase):
         lam: float = 1e-3,
         max_step: float = 0.2,
         omega: float = 0.5,
-        use_map_coordinates: bool = True,
+        interpolation: str = "cubic",
+        use_map_coordinates: bool | None = None,
     ) -> None:
         self._compiled = False
         self._solve_jit = None
         self._lam = float(lam)
         self._max_step = float(max_step)
         self._omega = float(omega)
-        self._use_map_coordinates = bool(use_map_coordinates)
+        if use_map_coordinates is not None:
+            warnings.warn(
+                "use_map_coordinates is deprecated; use interpolation='cubic' or 'linear'.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            interpolation = "cubic" if use_map_coordinates else "linear"
+        self._interpolation = _normalize_interpolation(interpolation)
 
     def compile(self, assets: Any) -> None:
         pixel_data = getattr(assets, "pixel_data", None)
@@ -76,7 +85,7 @@ class LocalGaussNewtonSolver(SolverBase):
             alpha_reg,
             omega,
             n_sweeps,
-            use_map_coordinates,
+            interpolation,
         ):
             return _local_sweeps(
                 disp0,
@@ -99,7 +108,7 @@ class LocalGaussNewtonSolver(SolverBase):
                 alpha_reg,
                 omega,
                 n_sweeps,
-                use_map_coordinates,
+                interpolation,
             )
 
         self._solve_jit = jax.jit(
@@ -151,7 +160,7 @@ class LocalGaussNewtonSolver(SolverBase):
             float(state.config.reg_strength),
             float(self._omega),
             int(state.config.max_iters),
-            bool(self._use_map_coordinates),
+            self._interpolation,
         )
 
         strain = jnp.zeros((disp_sol.shape[0], 3), dtype=disp_sol.dtype)
@@ -171,7 +180,7 @@ def _compute_image_gradient_np(im: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     return gx, gy
 
 
-@partial(jax.jit, static_argnames=("use_map_coordinates",))
+@partial(jax.jit, static_argnames=("interpolation",))
 def _pixel_state(
     displacement,
     im1_T,
@@ -181,7 +190,7 @@ def _pixel_state(
     pixel_shapeN,
     gradx2_T,
     grady2_T,
-    use_map_coordinates=False,
+    interpolation="cubic",
 ):
     shapeN = pixel_shapeN[..., None]
     disp_local = displacement[pixel_nodes]
@@ -189,36 +198,29 @@ def _pixel_state(
     x_ref = pixel_coords
     x_def = x_ref + u_pix
 
-    w, h = im2_T.shape
-    valid_ref = (x_ref[:, 0] >= 0.5) & (x_ref[:, 0] <= w - 0.5) & (x_ref[:, 1] >= 0.5) & (x_ref[:, 1] <= h - 0.5)
-    valid_def = (x_def[:, 0] >= 0.5) & (x_def[:, 0] <= w - 0.5) & (x_def[:, 1] >= 0.5) & (x_def[:, 1] <= h - 0.5)
-    valid = valid_ref & valid_def
-
-    if use_map_coordinates:
-        if _map_coordinates is None:
-            raise RuntimeError("jax.scipy.ndimage.map_coordinates is unavailable.")
-        I1 = _map_coordinates_sample(im1_T, x_ref)
-        I2 = _map_coordinates_sample(im2_T, x_def)
-        gx_def = _map_coordinates_sample(gradx2_T, x_def)
-        gy_def = _map_coordinates_sample(grady2_T, x_def)
-    elif flat_nd_linear_interpolate is not None:
-        I1 = flat_nd_linear_interpolate(im1_T, x_ref.T)
-        I2 = flat_nd_linear_interpolate(im2_T, x_def.T)
-        gx_def = flat_nd_linear_interpolate(gradx2_T, x_def.T)
-        gy_def = flat_nd_linear_interpolate(grady2_T, x_def.T)
+    if interpolation == "cubic":
+        I1 = _cubic_sample(im1_T, x_ref)
+        I2 = _cubic_sample(im2_T, x_def)
+        gx_def = _cubic_sample(gradx2_T, x_def)
+        gy_def = _cubic_sample(grady2_T, x_def)
+    elif interpolation == "linear":
+        if flat_nd_linear_interpolate is not None:
+            I1 = flat_nd_linear_interpolate(im1_T, x_ref.T)
+            I2 = flat_nd_linear_interpolate(im2_T, x_def.T)
+            gx_def = flat_nd_linear_interpolate(gradx2_T, x_def.T)
+            gy_def = flat_nd_linear_interpolate(grady2_T, x_def.T)
+        else:
+            I1 = _bilinear_sample(im1_T, x_ref)
+            I2 = _bilinear_sample(im2_T, x_def)
+            gx_def = _bilinear_sample(gradx2_T, x_def)
+            gy_def = _bilinear_sample(grady2_T, x_def)
     else:
-        I1 = _bilinear_sample(im1_T, x_ref)
-        I2 = _bilinear_sample(im2_T, x_def)
-        gx_def = _bilinear_sample(gradx2_T, x_def)
-        gy_def = _bilinear_sample(grady2_T, x_def)
-
-    r = jnp.where(valid, I2 - I1, jnp.asarray(0.0, dtype=I2.dtype))
-    gx_def = jnp.where(valid, gx_def, jnp.asarray(0.0, dtype=gx_def.dtype))
-    gy_def = jnp.where(valid, gy_def, jnp.asarray(0.0, dtype=gy_def.dtype))
+        raise ValueError(f"Unsupported interpolation: {interpolation}")
+    r = I2 - I1
     return r, x_def, gx_def, gy_def
 
 
-@partial(jax.jit, static_argnames=("use_map_coordinates",))
+@partial(jax.jit, static_argnames=("interpolation",))
 def _local_sweeps(
     displacement,
     im1_T,
@@ -240,7 +242,7 @@ def _local_sweeps(
     alpha_reg,
     omega,
     n_sweeps,
-    use_map_coordinates,
+    interpolation,
 ):
     def body_fun(_, disp):
         r, _x_def, gx_def, gy_def = _pixel_state(
@@ -252,7 +254,7 @@ def _local_sweeps(
             pixel_shapeN,
             gradx2_T,
             grady2_T,
-            use_map_coordinates=use_map_coordinates,
+            interpolation=interpolation,
         )
         disp_next = jacobi_nodal_step_spring(
             disp,
@@ -441,11 +443,19 @@ def _bilinear_sample(image_T: Array, coords: Array) -> Array:
     return val
 
 
-def _map_coordinates_sample(image_T: Array, coords: Array) -> Array:
-    if _map_coordinates is None:
-        raise RuntimeError("jax.scipy.ndimage.map_coordinates is unavailable.")
+def _normalize_interpolation(interpolation: str) -> str:
+    value = str(interpolation).lower()
+    if value == "bilinear":
+        value = "linear"
+    if value not in ("cubic", "linear"):
+        raise ValueError(f"Unsupported interpolation: {interpolation}")
+    return value
+
+
+def _cubic_sample(image_T: Array, coords: Array) -> Array:
+    if flat_nd_cubic_interpolate is None:
+        raise RuntimeError("im_jax.flat_nd_cubic_interpolate is unavailable.")
     x = coords[:, 0] - 0.5
     y = coords[:, 1] - 0.5
     sample_coords = jnp.stack([x, y], axis=0)
-    # JAX currently supports order <= 1; keep a central switch here for future upgrades.
-    return _map_coordinates(image_T, sample_coords, order=1, mode="nearest")
+    return flat_nd_cubic_interpolate(image_T, sample_coords, mode="nearest", cval=0.0, layout="HW")

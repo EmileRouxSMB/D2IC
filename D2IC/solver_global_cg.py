@@ -8,15 +8,16 @@ import jax.numpy as jnp
 import numpy as np
 from jax import lax
 from functools import partial
+import warnings
 
 try:  # pragma: no cover - optional legacy dependency
     from dm_pix import flat_nd_linear_interpolate
 except Exception:  # pragma: no cover
     flat_nd_linear_interpolate = None
-try:  # pragma: no cover - optional scipy-based interpolation
-    from jax.scipy.ndimage import map_coordinates as _map_coordinates
+try:  # pragma: no cover - optional cubic interpolation
+    from im_jax import flat_nd_cubic_interpolate
 except Exception:  # pragma: no cover
-    _map_coordinates = None
+    flat_nd_cubic_interpolate = None
 
 from .solver_base import SolverBase
 from .types import Array
@@ -36,11 +37,23 @@ class GlobalCGSolver(SolverBase):
     Stage-2: migrate your current global CG (and JAX core calls) into this file.
     """
 
-    def __init__(self, verbose: bool = False, use_map_coordinates: bool = True) -> None:
+    def __init__(
+        self,
+        verbose: bool = False,
+        interpolation: str = "cubic",
+        use_map_coordinates: bool | None = None,
+    ) -> None:
         self._compiled = False
         self._solve_jit = None
         self._verbose = bool(verbose)
-        self._use_map_coordinates = bool(use_map_coordinates)
+        if use_map_coordinates is not None:
+            warnings.warn(
+                "use_map_coordinates is deprecated; use interpolation='cubic' or 'linear'.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            interpolation = "cubic" if use_map_coordinates else "linear"
+        self._interpolation = _normalize_interpolation(interpolation)
 
     def compile(self, assets: Any) -> None:
         pixel_data = getattr(assets, "pixel_data", None)
@@ -61,7 +74,7 @@ class GlobalCGSolver(SolverBase):
             alpha_reg,
             max_iter,
             tol,
-            use_map_coordinates,
+            interpolation,
             verbose,
         ):
             return _cg_solve(
@@ -78,7 +91,7 @@ class GlobalCGSolver(SolverBase):
                 alpha_reg,
                 max_iter,
                 tol,
-                use_map_coordinates,
+                interpolation,
                 verbose,
             )
 
@@ -118,7 +131,7 @@ class GlobalCGSolver(SolverBase):
             float(state.config.reg_strength),
             int(state.config.max_iters),
             float(state.config.tol),
-            bool(self._use_map_coordinates),
+            self._interpolation,
             bool(self._verbose),
         ).compile()
 
@@ -150,7 +163,7 @@ class GlobalCGSolver(SolverBase):
             float(state.config.reg_strength),
             int(state.config.max_iters),
             float(state.config.tol),
-            bool(self._use_map_coordinates),
+            self._interpolation,
             bool(self._verbose),
         )
 
@@ -162,7 +175,7 @@ class GlobalCGSolver(SolverBase):
 # Core objective functions and CG loop
 # ---------------------------------------------------------------------
 
-@partial(jax.jit, static_argnames=("use_map_coordinates",))
+@partial(jax.jit, static_argnames=("interpolation",))
 def residuals_pixelwise_core(
     displacement,
     im1_T,
@@ -170,33 +183,31 @@ def residuals_pixelwise_core(
     pixel_coords,
     pixel_nodes,
     pixel_shapeN,
-    use_map_coordinates=False,
+    interpolation="cubic",
 ):
     shapeN = pixel_shapeN[..., None]
     disp_local = displacement[pixel_nodes]
     u_pix = (shapeN * disp_local).sum(axis=1)
     x_ref = pixel_coords
     x_def = x_ref + u_pix
-    w, h = im2_T.shape
-    valid_ref = (x_ref[:, 0] >= 0.5) & (x_ref[:, 0] <= w - 0.5) & (x_ref[:, 1] >= 0.5) & (x_ref[:, 1] <= h - 0.5)
-    valid_def = (x_def[:, 0] >= 0.5) & (x_def[:, 0] <= w - 0.5) & (x_def[:, 1] >= 0.5) & (x_def[:, 1] <= h - 0.5)
-    valid = valid_ref & valid_def
-    if use_map_coordinates:
-        if _map_coordinates is None:
-            raise RuntimeError("jax.scipy.ndimage.map_coordinates is unavailable.")
-        I1 = _map_coordinates_sample(im1_T, x_ref)
-        I2 = _map_coordinates_sample(im2_T, x_def)
-    elif flat_nd_linear_interpolate is not None:
-        I1 = flat_nd_linear_interpolate(im1_T, x_ref.T)
-        I2 = flat_nd_linear_interpolate(im2_T, x_def.T)
+    if interpolation == "cubic":
+        I1 = _cubic_sample(im1_T, x_ref)
+        I2 = _cubic_sample(im2_T, x_def)
+    elif interpolation == "linear":
+        if flat_nd_linear_interpolate is not None:
+            I1 = flat_nd_linear_interpolate(im1_T, x_ref.T)
+            I2 = flat_nd_linear_interpolate(im2_T, x_def.T)
+        else:
+            I1 = _bilinear_sample(im1_T, x_ref)
+            I2 = _bilinear_sample(im2_T, x_def)
     else:
-        I1 = _bilinear_sample(im1_T, x_ref)
-        I2 = _bilinear_sample(im2_T, x_def)
-    r = jnp.where(valid, I2 - I1, jnp.asarray(0.0, dtype=I2.dtype))
+        raise ValueError(f"Unsupported interpolation: {interpolation}")
+    r = I2 - I1
+    valid = jnp.ones_like(r, dtype=bool)
     return r, valid
 
 
-@partial(jax.jit, static_argnames=("use_map_coordinates",))
+@partial(jax.jit, static_argnames=("interpolation",))
 def J_pixelwise_core(
     displacement,
     im1_T,
@@ -204,7 +215,7 @@ def J_pixelwise_core(
     pixel_coords,
     pixel_nodes,
     pixel_shapeN,
-    use_map_coordinates=False,
+    interpolation="cubic",
 ):
     r, valid = residuals_pixelwise_core(
         displacement,
@@ -213,7 +224,7 @@ def J_pixelwise_core(
         pixel_coords,
         pixel_nodes,
         pixel_shapeN,
-        use_map_coordinates=use_map_coordinates,
+        interpolation=interpolation,
     )
     valid_f = valid.astype(r.dtype)
     denom = jnp.maximum(jnp.sum(valid_f), jnp.asarray(1.0, dtype=r.dtype))
@@ -259,7 +270,7 @@ def J_total(
     node_neighbor_degree,
     node_neighbor_weight,
     node_reg_weight,
-    use_map_coordinates,
+    interpolation,
     alpha_reg,
 ):
     J_img = J_pixelwise_core(
@@ -269,7 +280,7 @@ def J_total(
         pixel_coords,
         pixel_nodes,
         pixel_shapeN,
-        use_map_coordinates=use_map_coordinates,
+        interpolation=interpolation,
     )
     alpha_reg = jnp.asarray(alpha_reg, dtype=J_img.dtype)
     reg = reg_energy_spring_global(
@@ -299,7 +310,7 @@ def _cg_solve(
     alpha_reg,
     max_iter,
     tol,
-    use_map_coordinates,
+    interpolation,
     verbose,
 ):
     max_iter = int(max_iter)
@@ -316,7 +327,7 @@ def _cg_solve(
         node_neighbor_degree,
         node_neighbor_weight,
         node_reg_weight,
-        use_map_coordinates,
+        interpolation,
     )
 
     def cond_fun(state):
@@ -362,10 +373,14 @@ def _cg_solve(
                 operand=None,
             )
             gd = jnp.sum(grad * direction_new)
-            direction_new = jax.lax.cond(
+
+            def restart_direction(_):
+                return -grad, -jnp.sum(grad * grad)
+
+            direction_new, gd = jax.lax.cond(
                 gd >= 0,
-                lambda _: -grad,
-                lambda _: direction_new,
+                restart_direction,
+                lambda _: (direction_new, gd),
                 operand=None,
             )
 
@@ -421,6 +436,15 @@ def _cg_solve(
     return final_state[1], final_state[0]
 
 
+def _normalize_interpolation(interpolation: str) -> str:
+    value = str(interpolation).lower()
+    if value == "bilinear":
+        value = "linear"
+    if value not in ("cubic", "linear"):
+        raise ValueError(f"Unsupported interpolation: {interpolation}")
+    return value
+
+
 @jax.jit
 def _bilinear_sample(image_T: Array, coords: Array) -> Array:
     x = coords[:, 0]
@@ -452,11 +476,10 @@ def _bilinear_sample(image_T: Array, coords: Array) -> Array:
     return val
 
 
-def _map_coordinates_sample(image_T: Array, coords: Array) -> Array:
-    if _map_coordinates is None:
-        raise RuntimeError("jax.scipy.ndimage.map_coordinates is unavailable.")
+def _cubic_sample(image_T: Array, coords: Array) -> Array:
+    if flat_nd_cubic_interpolate is None:
+        raise RuntimeError("im_jax.flat_nd_cubic_interpolate is unavailable.")
     x = coords[:, 0] - 0.5
     y = coords[:, 1] - 0.5
     sample_coords = jnp.stack([x, y], axis=0)
-    # JAX currently supports order <= 1; keep a central switch here for future upgrades.
-    return _map_coordinates(image_T, sample_coords, order=1, mode="nearest")
+    return flat_nd_cubic_interpolate(image_T, sample_coords, mode="nearest", cval=0.0, layout="HW")

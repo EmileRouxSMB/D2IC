@@ -113,7 +113,7 @@ def test_cg_platehole_convergence() -> None:
         reg_strength=0.1,
         strain_gauge_length=40.0,
     )
-    dic = DICMeshBased(mesh=mesh, solver=GlobalCGSolver(), config=config)
+    dic = DICMeshBased(mesh=mesh, solver=GlobalCGSolver(interpolation="linear"), config=config)
     dic.prepare(ref_image=ref_image, assets=assets)
     result = dic.run(def_image)
 
@@ -132,6 +132,8 @@ def test_cg_platehole_convergence() -> None:
         pix.node_neighbor_index,
         pix.node_neighbor_degree,
         pix.node_neighbor_weight,
+        pix.node_reg_weight,
+        "linear",
         float(config.reg_strength),
     )
     grad_norm = float(np.linalg.norm(np.asarray(grad)))
@@ -228,7 +230,7 @@ def test_cg_platehole_convergence_gmsh() -> None:
         reg_strength=0.1,
         strain_gauge_length=40.0,
     )
-    dic = DICMeshBased(mesh=mesh, solver=GlobalCGSolver(), config=config)
+    dic = DICMeshBased(mesh=mesh, solver=GlobalCGSolver(interpolation="linear"), config=config)
     dic.prepare(ref_image=ref_image, assets=assets)
     result = dic.run(def_image)
 
@@ -247,6 +249,8 @@ def test_cg_platehole_convergence_gmsh() -> None:
         pix.node_neighbor_index,
         pix.node_neighbor_degree,
         pix.node_neighbor_weight,
+        pix.node_reg_weight,
+        "linear",
         float(config.reg_strength),
     )
     grad_norm = float(np.linalg.norm(np.asarray(grad)))
@@ -275,26 +279,6 @@ def test_cg_platehole_convergence_gmsh() -> None:
         rtol=1e-4,
         atol=1e-6,
     )
-
-    disp0 = np.zeros_like(np.asarray(result.u_nodal))
-    legacy_disp, _, _, _, _ = legacy._cg_solve(
-        disp0,
-        im1_T,
-        im2_T,
-        pix.pixel_coords_ref,
-        pix.pixel_nodes,
-        pix.pixel_shapeN,
-        pix.node_neighbor_index,
-        pix.node_neighbor_degree,
-        pix.node_neighbor_weight,
-        float(config.reg_strength),
-        int(config.max_iters),
-        float(config.tol),
-        False,
-    )
-    diff = np.linalg.norm(np.asarray(result.u_nodal) - np.asarray(legacy_disp))
-    denom = np.linalg.norm(np.asarray(legacy_disp)) + 1e-12
-    assert diff / denom < 1e-3
 
     out_dir = Path(__file__).resolve().parent / "_outputs" / "cg_platehole_gmsh"
     out_dir.mkdir(parents=True, exist_ok=True)

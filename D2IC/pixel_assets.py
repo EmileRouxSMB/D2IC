@@ -45,9 +45,7 @@ def build_pixel_assets(
         nodes,
         nodes.shape[0],
     )
-    max_deg = int(np.asarray(node_neighbor_degree).max(initial=0))
-    border_mask = np.asarray(node_neighbor_degree) < max_deg
-    node_reg_weight = np.where(border_mask, 10.0, 1.0).astype(nodes.dtype, copy=False)
+    node_reg_weight = np.ones_like(np.asarray(node_neighbor_degree), dtype=nodes.dtype)
     node_pixel_index, node_N_weight, node_degree = build_node_pixel_dense(
         pixel_nodes,
         pixel_shapeN,

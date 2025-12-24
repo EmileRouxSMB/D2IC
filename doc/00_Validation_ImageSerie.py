@@ -61,7 +61,7 @@ DIC_TOL = 1e-3
 DIC_REG_TYPE = "spring"
 DIC_ALPHA_REG = 1e-2
 USE_GMSH_MESH = False
-USE_MAP_COORDINATES = True
+INTERPOLATION = "cubic"  # "cubic" (im_jax) or "linear" (dm_pix/bilinear)
 GROUND_TRUTH_DEFAULT_STEP = 0.1  # px per frame if parsing fails
 
 
@@ -152,7 +152,7 @@ def _solve_sequence(im_ref: np.ndarray, images_def: List[np.ndarray]) -> np.ndar
     )
     dic_mesh = DICMeshBased(
         mesh=mesh,
-        solver=GlobalCGSolver(use_map_coordinates=USE_MAP_COORDINATES),
+        solver=GlobalCGSolver(interpolation=INTERPOLATION),
         config=mesh_cfg,
     )
     batch_cfg = BatchConfig(
