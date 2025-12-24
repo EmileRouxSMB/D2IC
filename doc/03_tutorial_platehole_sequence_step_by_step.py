@@ -100,6 +100,7 @@ DIC_TOL = 1e-3
 DIC_REG_TYPE = "spring"
 DIC_ALPHA_REG = 10.
 LOCAL_SWEEPS = 10  # set to 0 to disable nodal refinement
+USE_MAP_COORDINATES = True
 
 # Initialization options for subsequent frames.
 USE_VELOCITY = True
@@ -177,7 +178,11 @@ def run_pipeline_sequence() -> Tuple[np.ndarray, np.ndarray]:
         strain_gauge_length=STRAIN_GAUGE_LENGTH,
     )
 
-    dic_mesh = DICMeshBased(mesh=mesh, solver=GlobalCGSolver(), config=mesh_cfg)
+    dic_mesh = DICMeshBased(
+        mesh=mesh,
+        solver=GlobalCGSolver(use_map_coordinates=USE_MAP_COORDINATES),
+        config=mesh_cfg,
+    )
     dic_init = DICInitMotion(init_cfg, TranslationZNCCSolver(init_cfg)) if ENABLE_INITIAL_GUESS else None
 
     batch_cfg = BatchConfig(
@@ -207,7 +212,12 @@ def run_pipeline_sequence() -> Tuple[np.ndarray, np.ndarray]:
             reg_strength=DIC_ALPHA_REG,
             strain_gauge_length=STRAIN_GAUGE_LENGTH,
         )
-        local_solver = LocalGaussNewtonSolver(lam=0.1, max_step=0.2, omega=0.5)
+        local_solver = LocalGaussNewtonSolver(
+            lam=0.1,
+            max_step=0.2,
+            omega=0.5,
+            use_map_coordinates=USE_MAP_COORDINATES,
+        )
         dic_local = DICMeshBased(mesh=mesh, solver=local_solver, config=local_cfg)
         dic_local.prepare(ref_image, assets)
         refined = []

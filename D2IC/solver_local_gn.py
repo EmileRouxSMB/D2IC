@@ -7,11 +7,16 @@ import jax
 from jax import lax
 import jax.numpy as jnp
 import numpy as np
+from functools import partial
 
 try:  # pragma: no cover - optional dependency for fast interpolation
     from dm_pix import flat_nd_linear_interpolate
 except Exception:  # pragma: no cover
     flat_nd_linear_interpolate = None
+try:  # pragma: no cover - optional scipy-based interpolation
+    from jax.scipy.ndimage import map_coordinates as _map_coordinates
+except Exception:  # pragma: no cover
+    _map_coordinates = None
 
 from .solver_base import SolverBase
 from .types import Array
@@ -36,12 +41,14 @@ class LocalGaussNewtonSolver(SolverBase):
         lam: float = 1e-3,
         max_step: float = 0.2,
         omega: float = 0.5,
+        use_map_coordinates: bool = True,
     ) -> None:
         self._compiled = False
         self._solve_jit = None
         self._lam = float(lam)
         self._max_step = float(max_step)
         self._omega = float(omega)
+        self._use_map_coordinates = bool(use_map_coordinates)
 
     def compile(self, assets: Any) -> None:
         pixel_data = getattr(assets, "pixel_data", None)
@@ -69,6 +76,7 @@ class LocalGaussNewtonSolver(SolverBase):
             alpha_reg,
             omega,
             n_sweeps,
+            use_map_coordinates,
         ):
             return _local_sweeps(
                 disp0,
@@ -91,11 +99,12 @@ class LocalGaussNewtonSolver(SolverBase):
                 alpha_reg,
                 omega,
                 n_sweeps,
+                use_map_coordinates,
             )
 
         self._solve_jit = jax.jit(
             _local_fn,
-            static_argnums=(19,),
+            static_argnums=(19, 20),
             donate_argnums=(0,),
         )
         self._compiled = True
@@ -142,6 +151,7 @@ class LocalGaussNewtonSolver(SolverBase):
             float(state.config.reg_strength),
             float(self._omega),
             int(state.config.max_iters),
+            bool(self._use_map_coordinates),
         )
 
         strain = jnp.zeros((disp_sol.shape[0], 3), dtype=disp_sol.dtype)
@@ -161,7 +171,7 @@ def _compute_image_gradient_np(im: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     return gx, gy
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=("use_map_coordinates",))
 def _pixel_state(
     displacement,
     im1_T,
@@ -171,6 +181,7 @@ def _pixel_state(
     pixel_shapeN,
     gradx2_T,
     grady2_T,
+    use_map_coordinates=False,
 ):
     shapeN = pixel_shapeN[..., None]
     disp_local = displacement[pixel_nodes]
@@ -183,7 +194,14 @@ def _pixel_state(
     valid_def = (x_def[:, 0] >= 0.5) & (x_def[:, 0] <= w - 0.5) & (x_def[:, 1] >= 0.5) & (x_def[:, 1] <= h - 0.5)
     valid = valid_ref & valid_def
 
-    if flat_nd_linear_interpolate is not None:
+    if use_map_coordinates:
+        if _map_coordinates is None:
+            raise RuntimeError("jax.scipy.ndimage.map_coordinates is unavailable.")
+        I1 = _map_coordinates_sample(im1_T, x_ref)
+        I2 = _map_coordinates_sample(im2_T, x_def)
+        gx_def = _map_coordinates_sample(gradx2_T, x_def)
+        gy_def = _map_coordinates_sample(grady2_T, x_def)
+    elif flat_nd_linear_interpolate is not None:
         I1 = flat_nd_linear_interpolate(im1_T, x_ref.T)
         I2 = flat_nd_linear_interpolate(im2_T, x_def.T)
         gx_def = flat_nd_linear_interpolate(gradx2_T, x_def.T)
@@ -200,7 +218,7 @@ def _pixel_state(
     return r, x_def, gx_def, gy_def
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=("use_map_coordinates",))
 def _local_sweeps(
     displacement,
     im1_T,
@@ -222,6 +240,7 @@ def _local_sweeps(
     alpha_reg,
     omega,
     n_sweeps,
+    use_map_coordinates,
 ):
     def body_fun(_, disp):
         r, _x_def, gx_def, gy_def = _pixel_state(
@@ -233,6 +252,7 @@ def _local_sweeps(
             pixel_shapeN,
             gradx2_T,
             grady2_T,
+            use_map_coordinates=use_map_coordinates,
         )
         disp_next = jacobi_nodal_step_spring(
             disp,
@@ -419,3 +439,13 @@ def _bilinear_sample(image_T: Array, coords: Array) -> Array:
         + fx * fy * I11
     )
     return val
+
+
+def _map_coordinates_sample(image_T: Array, coords: Array) -> Array:
+    if _map_coordinates is None:
+        raise RuntimeError("jax.scipy.ndimage.map_coordinates is unavailable.")
+    x = coords[:, 0] - 0.5
+    y = coords[:, 1] - 0.5
+    sample_coords = jnp.stack([x, y], axis=0)
+    # JAX currently supports order <= 1; keep a central switch here for future upgrades.
+    return _map_coordinates(image_T, sample_coords, order=1, mode="nearest")

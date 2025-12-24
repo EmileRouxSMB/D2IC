@@ -6,11 +6,17 @@ from typing import Any, Tuple
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax import lax
+from functools import partial
 
 try:  # pragma: no cover - optional legacy dependency
     from dm_pix import flat_nd_linear_interpolate
 except Exception:  # pragma: no cover
     flat_nd_linear_interpolate = None
+try:  # pragma: no cover - optional scipy-based interpolation
+    from jax.scipy.ndimage import map_coordinates as _map_coordinates
+except Exception:  # pragma: no cover
+    _map_coordinates = None
 
 from .solver_base import SolverBase
 from .types import Array
@@ -30,10 +36,11 @@ class GlobalCGSolver(SolverBase):
     Stage-2: migrate your current global CG (and JAX core calls) into this file.
     """
 
-    def __init__(self, verbose: bool = False) -> None:
+    def __init__(self, verbose: bool = False, use_map_coordinates: bool = True) -> None:
         self._compiled = False
         self._solve_jit = None
         self._verbose = bool(verbose)
+        self._use_map_coordinates = bool(use_map_coordinates)
 
     def compile(self, assets: Any) -> None:
         pixel_data = getattr(assets, "pixel_data", None)
@@ -54,6 +61,7 @@ class GlobalCGSolver(SolverBase):
             alpha_reg,
             max_iter,
             tol,
+            use_map_coordinates,
             verbose,
         ):
             return _cg_solve(
@@ -70,12 +78,13 @@ class GlobalCGSolver(SolverBase):
                 alpha_reg,
                 max_iter,
                 tol,
+                use_map_coordinates,
                 verbose,
             )
 
         self._solve_jit = jax.jit(
             _cg_fn,
-            static_argnums=(11, 12, 13),
+            static_argnums=(11, 12, 13, 14),
             donate_argnums=(0,),
         )
         self._compiled = True
@@ -109,6 +118,7 @@ class GlobalCGSolver(SolverBase):
             float(state.config.reg_strength),
             int(state.config.max_iters),
             float(state.config.tol),
+            bool(self._use_map_coordinates),
             bool(self._verbose),
         ).compile()
 
@@ -140,6 +150,7 @@ class GlobalCGSolver(SolverBase):
             float(state.config.reg_strength),
             int(state.config.max_iters),
             float(state.config.tol),
+            bool(self._use_map_coordinates),
             bool(self._verbose),
         )
 
@@ -151,7 +162,7 @@ class GlobalCGSolver(SolverBase):
 # Core objective functions and CG loop
 # ---------------------------------------------------------------------
 
-@jax.jit
+@partial(jax.jit, static_argnames=("use_map_coordinates",))
 def residuals_pixelwise_core(
     displacement,
     im1_T,
@@ -159,6 +170,7 @@ def residuals_pixelwise_core(
     pixel_coords,
     pixel_nodes,
     pixel_shapeN,
+    use_map_coordinates=False,
 ):
     shapeN = pixel_shapeN[..., None]
     disp_local = displacement[pixel_nodes]
@@ -169,7 +181,12 @@ def residuals_pixelwise_core(
     valid_ref = (x_ref[:, 0] >= 0.5) & (x_ref[:, 0] <= w - 0.5) & (x_ref[:, 1] >= 0.5) & (x_ref[:, 1] <= h - 0.5)
     valid_def = (x_def[:, 0] >= 0.5) & (x_def[:, 0] <= w - 0.5) & (x_def[:, 1] >= 0.5) & (x_def[:, 1] <= h - 0.5)
     valid = valid_ref & valid_def
-    if flat_nd_linear_interpolate is not None:
+    if use_map_coordinates:
+        if _map_coordinates is None:
+            raise RuntimeError("jax.scipy.ndimage.map_coordinates is unavailable.")
+        I1 = _map_coordinates_sample(im1_T, x_ref)
+        I2 = _map_coordinates_sample(im2_T, x_def)
+    elif flat_nd_linear_interpolate is not None:
         I1 = flat_nd_linear_interpolate(im1_T, x_ref.T)
         I2 = flat_nd_linear_interpolate(im2_T, x_def.T)
     else:
@@ -179,7 +196,7 @@ def residuals_pixelwise_core(
     return r, valid
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=("use_map_coordinates",))
 def J_pixelwise_core(
     displacement,
     im1_T,
@@ -187,6 +204,7 @@ def J_pixelwise_core(
     pixel_coords,
     pixel_nodes,
     pixel_shapeN,
+    use_map_coordinates=False,
 ):
     r, valid = residuals_pixelwise_core(
         displacement,
@@ -195,6 +213,7 @@ def J_pixelwise_core(
         pixel_coords,
         pixel_nodes,
         pixel_shapeN,
+        use_map_coordinates=use_map_coordinates,
     )
     valid_f = valid.astype(r.dtype)
     denom = jnp.maximum(jnp.sum(valid_f), jnp.asarray(1.0, dtype=r.dtype))
@@ -240,6 +259,7 @@ def J_total(
     node_neighbor_degree,
     node_neighbor_weight,
     node_reg_weight,
+    use_map_coordinates,
     alpha_reg,
 ):
     J_img = J_pixelwise_core(
@@ -249,6 +269,7 @@ def J_total(
         pixel_coords,
         pixel_nodes,
         pixel_shapeN,
+        use_map_coordinates=use_map_coordinates,
     )
     alpha_reg = jnp.asarray(alpha_reg, dtype=J_img.dtype)
     reg = reg_energy_spring_global(
@@ -278,6 +299,7 @@ def _cg_solve(
     alpha_reg,
     max_iter,
     tol,
+    use_map_coordinates,
     verbose,
 ):
     max_iter = int(max_iter)
@@ -294,6 +316,7 @@ def _cg_solve(
         node_neighbor_degree,
         node_neighbor_weight,
         node_reg_weight,
+        use_map_coordinates,
     )
 
     def cond_fun(state):
@@ -427,3 +450,13 @@ def _bilinear_sample(image_T: Array, coords: Array) -> Array:
         + fx * fy * I11
     )
     return val
+
+
+def _map_coordinates_sample(image_T: Array, coords: Array) -> Array:
+    if _map_coordinates is None:
+        raise RuntimeError("jax.scipy.ndimage.map_coordinates is unavailable.")
+    x = coords[:, 0] - 0.5
+    y = coords[:, 1] - 0.5
+    sample_coords = jnp.stack([x, y], axis=0)
+    # JAX currently supports order <= 1; keep a central switch here for future upgrades.
+    return _map_coordinates(image_T, sample_coords, order=1, mode="nearest")

@@ -61,6 +61,7 @@ DIC_TOL = 1e-3
 DIC_REG_TYPE = "spring"
 DIC_ALPHA_REG = 1e-2
 USE_GMSH_MESH = False
+USE_MAP_COORDINATES = True
 GROUND_TRUTH_DEFAULT_STEP = 0.1  # px per frame if parsing fails
 
 
@@ -149,7 +150,11 @@ def _solve_sequence(im_ref: np.ndarray, images_def: List[np.ndarray]) -> np.ndar
         tol=DIC_TOL,
         reg_strength=DIC_ALPHA_REG,
     )
-    dic_mesh = DICMeshBased(mesh=mesh, solver=GlobalCGSolver(), config=mesh_cfg)
+    dic_mesh = DICMeshBased(
+        mesh=mesh,
+        solver=GlobalCGSolver(use_map_coordinates=USE_MAP_COORDINATES),
+        config=mesh_cfg,
+    )
     batch_cfg = BatchConfig(
         use_init_motion=False,
         warm_start_from_previous=True,
