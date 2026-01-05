@@ -28,6 +28,8 @@ from .mesh_assets import MeshAssets, PixelAssets
 class GlobalCGResult:
     u_nodal: Array
     strain: Array
+    history: Array | None = None
+    n_iters: int | None = None
 
 
 class GlobalCGSolver(SolverBase):
@@ -149,7 +151,7 @@ class GlobalCGSolver(SolverBase):
         disp0 = jnp.asarray(state.u0_nodal) if state.u0_nodal is not None else jnp.zeros_like(assets.mesh.nodes_xy)
         disp0 = jnp.asarray(disp0)
 
-        disp_sol, _ = self._solve_jit(
+        disp_sol, history, n_iters = self._solve_jit(
             disp0,
             im1_T,
             im2_T,
@@ -168,7 +170,13 @@ class GlobalCGSolver(SolverBase):
         )
 
         strain = jnp.zeros_like(disp_sol)
-        return GlobalCGResult(u_nodal=disp_sol, strain=strain)
+        save_history = bool(getattr(state.config, "save_history", False))
+        return GlobalCGResult(
+            u_nodal=disp_sol,
+            strain=strain,
+            history=history if save_history else None,
+            n_iters=int(n_iters),
+        )
 
 
 # ---------------------------------------------------------------------
@@ -316,6 +324,7 @@ def _cg_solve(
     max_iter = int(max_iter)
     disp0 = jnp.asarray(disp0)
     zero = jnp.zeros_like(disp0)
+    hist0 = jnp.full((max_iter, 3), jnp.nan, dtype=disp0.dtype)
 
     objective_args = (
         im1_T,
@@ -331,12 +340,12 @@ def _cg_solve(
     )
 
     def cond_fun(state):
-        k, disp, direction, grad_prev = state
-        del disp, direction, grad_prev
-        return k < max_iter
+        k, disp, direction, grad_prev, done, hist = state
+        del disp, direction, grad_prev, hist
+        return jnp.logical_and(k < max_iter, jnp.logical_not(done))
 
     def body_fun(state):
-        k, disp, direction, grad_prev = state
+        k, disp, direction, grad_prev, done, hist = state
         J_val, grad = _J_TOTAL_VG(
             disp,
             *objective_args,
@@ -354,7 +363,8 @@ def _cg_solve(
                     g=grad_norm,
                     a=0.0,
                 )
-            return max_iter, disp, direction, grad
+            hist_upd = hist.at[k].set(jnp.asarray([J_val, grad_norm, 0.0], dtype=hist.dtype))
+            return k, disp, direction, grad, jnp.bool_(True), hist_upd
 
         def continue_branch(_):
             def dir_first(_):
@@ -425,15 +435,18 @@ def _cg_solve(
                     a=alpha,
                 )
             disp_next = disp + alpha * direction_new
-            return k + 1, disp_next, direction_new, grad
+            hist_upd = hist.at[k].set(jnp.asarray([J_trial, grad_norm, alpha], dtype=hist.dtype))
+            return k + 1, disp_next, direction_new, grad, jnp.bool_(False), hist_upd
 
         return jax.lax.cond(stop, stop_branch, continue_branch, operand=None)
 
     k0 = jnp.array(0)
     direction0 = zero
     grad_prev0 = zero
-    final_state = jax.lax.while_loop(cond_fun, body_fun, (k0, disp0, direction0, grad_prev0))
-    return final_state[1], final_state[0]
+    done0 = jnp.bool_(False)
+    final_state = jax.lax.while_loop(cond_fun, body_fun, (k0, disp0, direction0, grad_prev0, done0, hist0))
+    k_final, disp_final, _dir, _grad, _done, hist_final = final_state
+    return disp_final, hist_final, k_final
 
 
 def _normalize_interpolation(interpolation: str) -> str:

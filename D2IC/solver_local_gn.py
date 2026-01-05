@@ -28,6 +28,7 @@ from .mesh_assets import MeshAssets, PixelAssets
 class LocalGNResult:
     u_nodal: Array
     strain: Array
+    history: Array | None = None
 
 
 class LocalGaussNewtonSolver(SolverBase):
@@ -139,7 +140,7 @@ class LocalGaussNewtonSolver(SolverBase):
         gx2_T = jnp.asarray(gx2_np.T, dtype=def_im.dtype)
         gy2_T = jnp.asarray(gy2_np.T, dtype=def_im.dtype)
 
-        disp_sol = self._solve_jit(
+        disp_sol, history = self._solve_jit(
             disp0,
             im1_T,
             im2_T,
@@ -164,7 +165,8 @@ class LocalGaussNewtonSolver(SolverBase):
         )
 
         strain = jnp.zeros((disp_sol.shape[0], 3), dtype=disp_sol.dtype)
-        return LocalGNResult(u_nodal=disp_sol, strain=strain)
+        save_history = bool(getattr(state.config, "save_history", False))
+        return LocalGNResult(u_nodal=disp_sol, strain=strain, history=history if save_history else None)
 
 
 # ---------------------------------------------------------------------
@@ -220,7 +222,7 @@ def _pixel_state(
     return r, x_def, gx_def, gy_def
 
 
-@partial(jax.jit, static_argnames=("interpolation",))
+@partial(jax.jit, static_argnames=("interpolation", "n_sweeps"))
 def _local_sweeps(
     displacement,
     im1_T,
@@ -244,7 +246,10 @@ def _local_sweeps(
     n_sweeps,
     interpolation,
 ):
-    def body_fun(_, disp):
+    hist0 = jnp.full((int(n_sweeps), 2), jnp.nan, dtype=displacement.dtype)
+
+    def body_fun(k, carry):
+        disp, hist = carry
         r, _x_def, gx_def, gy_def = _pixel_state(
             disp,
             im1_T,
@@ -273,9 +278,15 @@ def _local_sweeps(
             alpha_reg=alpha_reg,
             omega=omega,
         )
-        return disp_next
+        # History: per-sweep RMS residual and RMS displacement update.
+        r_rms = jnp.sqrt(jnp.mean(r * r))
+        step = disp_next - disp
+        step_rms = jnp.sqrt(jnp.mean(step * step))
+        hist = hist.at[k].set(jnp.asarray([r_rms, step_rms], dtype=hist.dtype))
+        return disp_next, hist
 
-    return lax.fori_loop(0, n_sweeps, body_fun, displacement)
+    disp_final, hist_final = lax.fori_loop(0, n_sweeps, body_fun, (displacement, hist0))
+    return disp_final, hist_final
 
 
 @jax.jit

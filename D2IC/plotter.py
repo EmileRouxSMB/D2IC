@@ -48,14 +48,15 @@ class DICPlotter:
         ref_image: Optional[np.ndarray] = None,
         binning: float = 1.0,
         pixel_assets: Optional[PixelAssets] = None,
-        project_on_deformed: bool = True,
+        project_on_deformed: bool | str = True,
     ) -> None:
         self._result = result
         self._mesh = mesh
         self._def_image = np.asarray(def_image)
         self._ref_image = None if ref_image is None else np.asarray(ref_image)
         self._binning = float(binning)
-        self._project_on_deformed = bool(project_on_deformed)
+        self._projection_mode = self._normalize_projection_mode(project_on_deformed)
+        self._project_on_deformed = self._projection_mode in ("direct", "fast")
 
         self._validate_inputs()
         self._strain_fields = self._normalize_strain(result.strain)
@@ -67,14 +68,16 @@ class DICPlotter:
         if pix_ref is None:
             pix_ref = build_pixel_assets(mesh=mesh, ref_image=pixel_ref, binning=self._binning)
 
-        if self._project_on_deformed:
+        if self._projection_mode == "direct":
             nodes_def = np.asarray(mesh.nodes_xy) + self._u_nodal
             mesh_def = Mesh(nodes_xy=nodes_def, elements=mesh.elements)
             pix_proj = build_pixel_assets(mesh=mesh_def, ref_image=self._def_image, binning=self._binning)
-            self._projection_mode = "direct"
         else:
             pix_proj = pix_ref
-            self._projection_mode = "splat"
+            if self._projection_mode == "fast":
+                self._projection_mode = "fast"
+            else:
+                self._projection_mode = "splat"
 
         self._pixel_coords_ref = np.asarray(pix_ref.pixel_coords_ref)
         self._pixel_nodes_ref = np.asarray(pix_ref.pixel_nodes, dtype=int)
@@ -93,8 +96,10 @@ class DICPlotter:
             self._mesh_nodes_plot = (np.asarray(mesh.nodes_xy) + self._u_nodal) / self._binning
 
         self._precompute_reference_projection()
-        if self._project_on_deformed:
+        if self._projection_mode == "direct":
             self._precompute_deformed_projection()
+        elif self._projection_mode == "fast":
+            self._precompute_deformed_projection_fast()
         else:
             self._ux_map = self._scatter_pixel_values(self._pixel_displacement_ref[:, 0])
             self._uy_map = self._scatter_pixel_values(self._pixel_displacement_ref[:, 1])
@@ -114,6 +119,19 @@ class DICPlotter:
             raise ValueError("result.u_nodal must have shape (Nnodes, 2).")
         if self._ref_image is not None and self._ref_image.ndim != 2:
             raise ValueError("ref_image must be a 2D array when provided.")
+
+    @staticmethod
+    def _normalize_projection_mode(project_on_deformed: bool | str) -> str:
+        if isinstance(project_on_deformed, str):
+            mode = project_on_deformed.strip().lower()
+            if mode in ("fast", "deformed_fast", "fast_deformed"):
+                return "fast"
+            if mode in ("exact", "direct", "true", "deformed"):
+                return "direct"
+            if mode in ("false", "none", "ref", "reference"):
+                return "splat"
+            raise ValueError(f"Unsupported project_on_deformed mode: {project_on_deformed}")
+        return "direct" if project_on_deformed else "splat"
 
     @staticmethod
     def _normalize_strain(strain: np.ndarray) -> Dict[str, np.ndarray]:
@@ -182,6 +200,16 @@ class DICPlotter:
         self._ux_map = self._scatter_pixel_values_direct(pixel_disp[:, 0])
         self._uy_map = self._scatter_pixel_values_direct(pixel_disp[:, 1])
 
+    def _precompute_deformed_projection_fast(self) -> None:
+        """Fast projection on the deformed image using reference pixel assets."""
+        self._image_shape_def = self._def_image.shape[:2]
+        self._scatter_contribs_def = self._build_scatter_contribs(
+            self._pixel_coords_def_ref,
+            self._image_shape_def,
+        )
+        self._ux_map = self._scatter_pixel_values_def(self._pixel_displacement_ref[:, 0])
+        self._uy_map = self._scatter_pixel_values_def(self._pixel_displacement_ref[:, 1])
+
     @staticmethod
     def _normalize_field_name(field: str) -> PlotField:
         key = field.strip().lower().replace("_", "")
@@ -208,8 +236,30 @@ class DICPlotter:
         return aliases[key]
 
     def _scatter_pixel_values(self, pixel_values: np.ndarray, valid_mask: Optional[np.ndarray] = None) -> np.ndarray:
+        return self._scatter_pixel_values_with(
+            pixel_values,
+            self._scatter_contribs_ref,
+            self._image_shape_ref,
+            valid_mask=valid_mask,
+        )
+
+    def _scatter_pixel_values_def(self, pixel_values: np.ndarray, valid_mask: Optional[np.ndarray] = None) -> np.ndarray:
+        return self._scatter_pixel_values_with(
+            pixel_values,
+            self._scatter_contribs_def,
+            self._image_shape_def,
+            valid_mask=valid_mask,
+        )
+
+    @staticmethod
+    def _scatter_pixel_values_with(
+        pixel_values: np.ndarray,
+        scatter_contribs,
+        image_shape,
+        valid_mask: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
         pixel_values = np.asarray(pixel_values)
-        H, W = self._image_shape_ref
+        H, W = image_shape
         grid = np.full((H, W), np.nan, dtype=float)
         if pixel_values.size == 0:
             return grid
@@ -217,7 +267,7 @@ class DICPlotter:
         accum_flat = np.zeros(H * W, dtype=float)
         weight_flat = np.zeros(H * W, dtype=float)
 
-        for contrib in self._scatter_contribs_ref:
+        for contrib in scatter_contribs:
             pixel_idx = contrib["pixel_idx"]
             if pixel_idx.size == 0:
                 continue
@@ -270,6 +320,9 @@ class DICPlotter:
         if self._projection_mode == "direct":
             pixel_vals = np.sum(self._pixel_shape_proj * values[self._pixel_nodes_proj], axis=1)
             return self._scatter_pixel_values_direct(pixel_vals)
+        if self._projection_mode == "fast":
+            pixel_vals = np.sum(self._pixel_shape_ref * values[self._pixel_nodes_ref], axis=1)
+            return self._scatter_pixel_values_def(pixel_vals)
         pixel_vals = np.sum(self._pixel_shape_ref * values[self._pixel_nodes_ref], axis=1)
         return self._scatter_pixel_values(pixel_vals)
 
@@ -321,7 +374,45 @@ class DICPlotter:
         i2 = self._bilinear_sample(self._def_image, self._pixel_coords_def_ref)
         residuals = i2 - i1
         valid = np.isfinite(residuals)
+        if self._projection_mode == "direct":
+            return self._scatter_pixel_values_direct(residuals, valid_mask=valid)
+        if self._projection_mode == "fast":
+            return self._scatter_pixel_values_def(residuals, valid_mask=valid)
         return self._scatter_pixel_values(residuals, valid_mask=valid)
+
+    @staticmethod
+    def _build_scatter_contribs(pixel_coords: np.ndarray, image_shape: tuple[int, int]):
+        x_cont = pixel_coords[:, 0] - 0.5
+        y_cont = pixel_coords[:, 1] - 0.5
+        i0 = np.floor(y_cont).astype(int)
+        j0 = np.floor(x_cont).astype(int)
+        fx = x_cont - j0
+        fy = y_cont - i0
+
+        H, W = image_shape
+        contribs = []
+        for w, di, dj in (
+            ((1.0 - fx) * (1.0 - fy), 0, 0),
+            (fx * (1.0 - fy), 0, 1),
+            ((1.0 - fx) * fy, 1, 0),
+            (fx * fy, 1, 1),
+        ):
+            ii = i0 + di
+            jj = j0 + dj
+            mask = (ii >= 0) & (ii < H) & (jj >= 0) & (jj < W) & (w > 0)
+            idx = np.nonzero(mask)[0]
+            if idx.size == 0:
+                contribs.append({"pixel_idx": idx, "idx_flat": idx, "weights": w[:0]})
+                continue
+            idx_flat = (ii[mask] * W + jj[mask]).astype(np.int64, copy=False)
+            contribs.append(
+                {
+                    "pixel_idx": idx,
+                    "idx_flat": idx_flat,
+                    "weights": w[mask],
+                }
+            )
+        return contribs
 
     def _quad_mesh_collection(self) -> Optional[PolyCollection]:
         nodes = np.asarray(self._mesh_nodes_plot)

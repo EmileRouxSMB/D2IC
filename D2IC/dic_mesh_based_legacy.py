@@ -82,7 +82,7 @@ class DICMeshBasedLegacy(DICBase):
                 max_iter=self.config.max_iters,
                 tol=self.config.tol,
                 alpha_reg=self.config.reg_strength,
-                save_history=False,
+                save_history=self.config.save_history,
             )
             diagnostics = {
                 "solver": "cg_global",
@@ -107,7 +107,10 @@ class DICMeshBasedLegacy(DICBase):
             "solver_mode": self.solver_mode,
             **diagnostics,
         })
-        return DICResult(u_nodal=u_nodal, strain=strain, diagnostics=diag)
+        out_history = None
+        if self.solver_mode == "cg_global" and self.config.save_history:
+            out_history = jnp.asarray(history) if history is not None else None
+        return DICResult(u_nodal=u_nodal, strain=strain, diagnostics=diag, history=out_history)
 
     @staticmethod
     def _apply_binning(image: Array, binning: float | int) -> Array:

@@ -58,7 +58,7 @@ class DICInitMotion(DICBase):
                 "note": "IDW projection placeholder",
             }
         )
-        return DICResult(u_nodal=u_nodal, strain=strain, diagnostics=diag)
+        return DICResult(u_nodal=u_nodal, strain=strain, diagnostics=diag, history=None)
 
 
 def _project_centers_to_nodes_idw(

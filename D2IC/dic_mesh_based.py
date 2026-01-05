@@ -88,6 +88,10 @@ class DICMeshBased(DICBase):
         strain = sol.strain
         assets = self._state.assets
         diag_info = {"stage": "mesh_based", "note": "stage-2 placeholder"}
+        if getattr(sol, "n_iters", None) is not None:
+            diag_info["n_iters"] = int(sol.n_iters)
+        if getattr(sol, "history", None) is not None:
+            diag_info["history"] = "attached"
 
         has_neighbors = assets.node_neighbor_index is not None and assets.node_neighbor_degree is not None
         if has_neighbors:
@@ -111,4 +115,5 @@ class DICMeshBased(DICBase):
             diag_info["strain"] = "skipped_no_neighbors"
 
         diag = DICDiagnostics(info=diag_info)
-        return DICResult(u_nodal=u_nodal, strain=strain, diagnostics=diag)
+        history = getattr(sol, "history", None)
+        return DICResult(u_nodal=u_nodal, strain=strain, diagnostics=diag, history=history)
