@@ -164,7 +164,6 @@ def _solve_sequence(im_ref: np.ndarray, images_def: List[np.ndarray]) -> np.ndar
         assets=assets,
         dic_mesh=dic_mesh,
         batch_config=batch_cfg,
-        dic_init=None,
         propagator=None,
     )
     t_batch = time.perf_counter()

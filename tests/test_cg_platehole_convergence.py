@@ -12,16 +12,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-try:  # optional image readers
-    import imageio.v2 as imageio
-except Exception:  # pragma: no cover
-    imageio = None
-
-try:  # optional TIFF reader fallback
-    import tifffile
-except Exception:  # pragma: no cover
-    tifffile = None
-
 from d2ic import (
     MeshDICConfig,
     DICMeshBased,
@@ -31,6 +21,7 @@ from d2ic import (
     mask_to_mesh_assets_gmsh,
 )
 from d2ic.solver_global_cg import _J_TOTAL_VG
+from d2ic.app_utils import imread_gray
 
 
 def _import_legacy_dic():
@@ -39,39 +30,6 @@ def _import_legacy_dic():
     sys.modules.setdefault("D2IC.dic_JaxCore", importlib.import_module("d2ic._legacy.dic_JaxCore"))
     sys.modules.setdefault("D2IC.feature_matching", importlib.import_module("d2ic._legacy.feature_matching"))
     return importlib.import_module("d2ic._legacy.dic")
-
-
-def _imread_gray(path: Path) -> np.ndarray:
-    for loader in (_try_imageio, _try_tifffile, _try_matplotlib):
-        arr = loader(path)
-        if arr is None:
-            continue
-        data = np.asarray(arr)
-        if data.ndim == 3:
-            if data.shape[2] == 4:
-                data = data[..., :3]
-            data = data.mean(axis=2)
-        return data.astype(np.float32, copy=False)
-    raise RuntimeError(f"Could not read image {path} with the available backends.")
-
-
-def _try_imageio(path: Path) -> np.ndarray | None:
-    if imageio is None:
-        return None
-    return imageio.imread(path)
-
-
-def _try_tifffile(path: Path) -> np.ndarray | None:
-    if tifffile is None:
-        return None
-    return tifffile.imread(path)
-
-
-def _try_matplotlib(path: Path) -> np.ndarray | None:
-    try:
-        return plt.imread(path)
-    except Exception:  # pragma: no cover - fallback only
-        return None
 
 
 def _crop_with_y(image: np.ndarray, size: int, y0: int) -> tuple[np.ndarray, int, int]:
@@ -92,8 +50,8 @@ def test_cg_platehole_convergence() -> None:
     if not ref_path.exists() or not def_path.exists():
         raise FileNotFoundError("PlateHole images not found for CG convergence test.")
 
-    ref_full = _imread_gray(ref_path)
-    def_full = _imread_gray(def_path)
+    ref_full = imread_gray(ref_path)
+    def_full = imread_gray(def_path)
     roi_size = 240
     roi_y0 = 700
     ref_image, i0, j0 = _crop_with_y(ref_full, roi_size, roi_y0)
@@ -206,8 +164,8 @@ def test_cg_platehole_convergence_gmsh() -> None:
     if not ref_path.exists() or not def_path.exists():
         raise FileNotFoundError("PlateHole images not found for CG convergence test.")
 
-    ref_full = _imread_gray(ref_path)
-    def_full = _imread_gray(def_path)
+    ref_full = imread_gray(ref_path)
+    def_full = imread_gray(def_path)
     roi_size = 250
     roi_y0 = 700
     ref_image, i0, j0 = _crop_with_y(ref_full, roi_size, roi_y0)

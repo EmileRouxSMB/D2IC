@@ -18,21 +18,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable, Sequence, Tuple
 
-import jax
 import matplotlib
-import matplotlib.pyplot as plt
-import matplotlib.image as mpl_image
 import numpy as np
-
-try:  # optional image readers
-    import imageio.v2 as imageio
-except Exception:  # pragma: no cover
-    imageio = None
-
-try:  # optional TIFF reader fallback
-    import tifffile
-except Exception:  # pragma: no cover
-    tifffile = None
 
 try:  # optional mesh writer
     import meshio
@@ -41,42 +28,24 @@ except Exception:  # pragma: no cover
 
 
 from d2ic import (
-    InitMotionConfig,
     MeshDICConfig,
     BatchConfig,
     mask_to_mesh_assets,
     mask_to_mesh_assets_gmsh,
-    DICInitMotion,
     DICMeshBased,
-    TranslationZNCCSolver,
     GlobalCGSolver,
     LocalGaussNewtonSolver,
     PreviousDisplacementPropagator,
     ConstantVelocityPropagator,
-    DICPlotter,
 )
 from d2ic import BatchMeshBased
 from d2ic.mesh_assets import make_mesh_assets
+from d2ic.app_utils import configure_jax_platform, imread_gray, list_deformed_images, prepare_image
 
 # Non-interactive backend so figures can be saved without a display.
 matplotlib.use("Agg")
 
-
-def _configure_jax_platform(preferred: str = "gpu", fallback: str = "cpu") -> None:
-    """Try to use the preferred accelerator, but fall back to CPU when unavailable."""
-    try:
-        devices = jax.devices(preferred)
-    except RuntimeError:
-        devices = []
-    if devices:
-        jax.config.update("jax_platform_name", preferred)
-        print(f"JAX backend: {preferred} ({len(devices)} device(s) detected)")
-    else:
-        jax.config.update("jax_platform_name", fallback)
-        print(f"JAX backend: {preferred} unavailable, falling back to {fallback}.")
-
-
-_configure_jax_platform()
+configure_jax_platform()
 
 # --------------------------------------------------------------------------- #
 #                PARAMETERS TO ADJUST (SECTION FOR NON-EXPERTS)               #
@@ -118,8 +87,6 @@ PLOT_MESH = True
 PLOT_FIELDS = ("u1", "u2", "e11", "e22", "e12")
 PLOT_INCLUDE_DISCREPANCY = False
 
-# Sparse-match initialization toggle.
-ENABLE_INITIAL_GUESS = True
 # Downsample factor for reference/deformed images (1 keeps native resolution).
 IMAGE_BINNING = 1
 # Interpolation used inside solvers: "cubic" (im_jax) or "linear" (dm_pix/bilinear fallback).
@@ -144,13 +111,13 @@ def run_pipeline_sequence() -> Tuple[np.ndarray, np.ndarray]:
     if not mask_path.exists():
         raise FileNotFoundError(f"Mask image not found: {mask_path}")
 
-    def_paths = _list_deformed_images(IMG_DIR, IMAGE_PATTERN, REF_IMAGE_NAME)
+    def_paths = list_deformed_images(IMG_DIR, IMAGE_PATTERN, exclude_name=REF_IMAGE_NAME)
     if not def_paths:
         raise RuntimeError(f"No deformed images found in {IMG_DIR} with pattern '{IMAGE_PATTERN}'.")
 
-    ref_image = _prepare_image(ref_path, IMAGE_BINNING)
-    def_images = [_prepare_image(p, IMAGE_BINNING) for p in def_paths]
-    mask = _imread_gray(mask_path) > 0.5
+    ref_image = prepare_image(ref_path, binning=IMAGE_BINNING)
+    def_images = [prepare_image(p, binning=IMAGE_BINNING) for p in def_paths]
+    mask = imread_gray(mask_path) > 0.5
 
     try:
         mesh, assets = mask_to_mesh_assets_gmsh(
@@ -172,7 +139,6 @@ def run_pipeline_sequence() -> Tuple[np.ndarray, np.ndarray]:
         )
         assets = make_mesh_assets(mesh, with_neighbors=True)
 
-    init_cfg = InitMotionConfig()
     mesh_cfg = MeshDICConfig(
         max_iters=DIC_MAX_ITER,
         tol=DIC_TOL,
@@ -186,13 +152,10 @@ def run_pipeline_sequence() -> Tuple[np.ndarray, np.ndarray]:
         solver=GlobalCGSolver(interpolation=INTERPOLATION, verbose=VERBOSE),
         config=mesh_cfg,
     )
-    dic_init = DICInitMotion(init_cfg, TranslationZNCCSolver(init_cfg)) if ENABLE_INITIAL_GUESS else None
 
     batch_cfg = BatchConfig(
-        use_init_motion=ENABLE_INITIAL_GUESS,
+        use_init_motion=False,
         warm_start_from_previous=True,
-        init_motion_every_frame=ENABLE_INITIAL_GUESS,
-        prefer_init_motion_over_propagation=True,
         verbose=True,
         progress=True,
         export_png=True,
@@ -231,7 +194,6 @@ def run_pipeline_sequence() -> Tuple[np.ndarray, np.ndarray]:
         assets=assets,
         dic_mesh=dic_mesh,
         batch_config=batch_cfg,
-        dic_init=dic_init,
         dic_local=dic_local,
         propagator=propagator,
     )
@@ -272,71 +234,6 @@ def run_pipeline_sequence() -> Tuple[np.ndarray, np.ndarray]:
         print("Note: velocity smoothing is not currently exposed (stage-2 TODO).")
 
     return u_stack, strain_stack
-
-
-def _list_deformed_images(img_dir: Path, pattern: str, ref_name: str) -> list[Path]:
-    all_paths = sorted(img_dir.glob(pattern))
-    return [p for p in all_paths if p.name != ref_name]
-
-
-def _prepare_image(path: Path, binning: int) -> np.ndarray:
-    img = _imread_gray(path)
-    if binning > 1:
-        img = _downsample_image(img, binning)
-    return img.astype(np.float32, copy=False)
-
-
-def _imread_gray(path: Path) -> np.ndarray:
-    for loader in (_try_imageio, _try_tifffile, _try_matplotlib):
-        arr = loader(path)
-        if arr is None:
-            continue
-        data = np.asarray(arr)
-        if data.ndim == 3:
-            if data.shape[2] == 4:  # drop alpha
-                data = data[..., :3]
-            data = data.mean(axis=2)
-        return data.astype(np.float32, copy=False)
-    raise RuntimeError(f"Could not read image {path} with the available backends.")
-
-
-def _try_imageio(path: Path) -> np.ndarray | None:
-    if imageio is None:
-        return None
-    try:
-        return imageio.imread(path)
-    except Exception:
-        return None
-
-
-def _try_tifffile(path: Path) -> np.ndarray | None:
-    if tifffile is None:
-        return None
-    try:
-        return tifffile.imread(path)
-    except Exception:
-        return None
-
-
-def _try_matplotlib(path: Path) -> np.ndarray | None:
-    try:
-        return mpl_image.imread(path)
-    except Exception:
-        return None
-
-
-def _downsample_image(image: np.ndarray, binning: int) -> np.ndarray:
-    if binning <= 1:
-        return image
-    h, w = image.shape
-    new_h = h // binning
-    new_w = w // binning
-    if new_h == 0 or new_w == 0:
-        raise ValueError("Binning factor too large for the input image size.")
-    trimmed = image[: new_h * binning, : new_w * binning]
-    reshaped = trimmed.reshape(new_h, binning, new_w, binning)
-    return reshaped.mean(axis=(1, 3))
-
 
 def main() -> None:
     run_pipeline_sequence()

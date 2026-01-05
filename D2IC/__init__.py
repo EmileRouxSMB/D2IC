@@ -35,6 +35,13 @@ from .solver_translation_zncc import TranslationZNCCSolver
 from .solver_global_cg import GlobalCGSolver
 from .solver_local_gn import LocalGaussNewtonSolver
 from .plotter import DICPlotter
+from .app_utils import (
+    configure_jax_platform,
+    list_deformed_images,
+    prepare_image,
+    imread_gray,
+    downsample_image,
+)
 
 __all__ = [
     "Array",
@@ -68,4 +75,9 @@ __all__ = [
     "GlobalCGSolver",
     "LocalGaussNewtonSolver",
     "DICPlotter",
+    "configure_jax_platform",
+    "list_deformed_images",
+    "prepare_image",
+    "imread_gray",
+    "downsample_image",
 ]

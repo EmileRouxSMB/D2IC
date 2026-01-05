@@ -1,1 +1,1 @@
-"""Deprecated legacy modules retained for back-compatibility."""
+"""Deprecated modules retained for back-compatibility."""

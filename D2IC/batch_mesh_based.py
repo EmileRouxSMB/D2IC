@@ -7,7 +7,6 @@ from typing import Sequence, Optional
 import numpy as np
 
 from .batch_base import BatchBase
-from .dic_init_motion import DICInitMotion
 from .dic_mesh_based import DICMeshBased
 from .mesh_assets import MeshAssets
 from .types import Array
@@ -27,9 +26,9 @@ class BatchMeshBased(BatchBase):
     Concrete batch runner for mesh-based DIC.
 
     Stage-1:
-    - Uses injected DICInitMotion and DICMeshBased instances.
+    - Uses injected DICMeshBased instances.
     - before(): prepares both pipelines with ref_image/assets
-    - sequence(): runs per-frame DICMeshBased.run(def_image), optionally using init motion
+    - sequence(): runs per-frame DICMeshBased.run(def_image), optionally using a propagator
     - end(): placeholder post-processing
 
     Notes:
@@ -42,7 +41,6 @@ class BatchMeshBased(BatchBase):
         assets: MeshAssets,
         dic_mesh: DICMeshBased,
         batch_config: BatchConfig,
-        dic_init: Optional[DICInitMotion] = None,
         dic_local: Optional[DICMeshBased] = None,
         propagator: Optional[DisplacementPropagatorBase] = None,
     ) -> None:
@@ -50,7 +48,6 @@ class BatchMeshBased(BatchBase):
         self.ref_image = ref_image
         self.assets = assets
         self.dic_mesh = dic_mesh
-        self.dic_init = dic_init
         self.dic_local = dic_local
         self.config = batch_config
         self.propagator = propagator
@@ -59,10 +56,6 @@ class BatchMeshBased(BatchBase):
     def before(self, images: Sequence[Array]) -> None:
         # Prepare mesh-based DIC pipeline
         self.dic_mesh.prepare(self.ref_image, self.assets)
-
-        # Prepare init motion pipeline if enabled and provided
-        if self.config.use_init_motion and self.dic_init is not None:
-            self.dic_init.prepare(self.ref_image, self.assets)
 
         # Prepare local refinement pipeline if provided
         if self.dic_local is not None:
@@ -133,47 +126,25 @@ class BatchMeshBased(BatchBase):
         per_frame: list[DICResult] = []
         u_prev = None
         u_prevprev = None
-        use_init_each = self.config.init_motion_every_frame
-        use_init_first_only = self.config.init_motion_first_frame_only
-        if use_init_each and use_init_first_only:
-            raise ValueError("BatchConfig cannot enable both init_motion_every_frame and init_motion_first_frame_only.")
-        prefer_init = self.config.prefer_init_motion_over_propagation
 
         n_frames = len(images)
         for k, Idef in enumerate(images):
             if progress or verbose:
                 print(f"[Batch] Frame {k + 1}/{n_frames}: start")
-            use_init = False
-            if self.dic_init is not None and self.config.use_init_motion:
-                if use_init_each:
-                    use_init = True
-                elif use_init_first_only and k == 0:
-                    use_init = True
-                elif prefer_init:
-                    use_init = True
-
-            if use_init and self.dic_init is not None:
-                init_res = self.dic_init.run(Idef)
-                self.dic_mesh.set_initial_guess(init_res.u_nodal)
-                init_disp = init_res.u_nodal
+            if self.propagator is not None:
+                u_warm = self.propagator.propagate(u_prev=u_prev, u_prevprev=u_prevprev)
                 if verbose:
-                    print("  init: motion matching")
+                    print(f"  init: propagator={self.propagator.__class__.__name__}")
             else:
-                if self.propagator is not None:
-                    u_warm = self.propagator.propagate(u_prev=u_prev, u_prevprev=u_prevprev)
-                    if verbose:
-                        print(f"  init: propagator={self.propagator.__class__.__name__}")
-                else:
-                    u_warm = u_prev if self.config.warm_start_from_previous else None
-                    if verbose:
-                        if u_warm is None:
-                            print("  init: none")
-                        else:
-                            print("  init: warm-start from previous frame")
+                u_warm = u_prev if self.config.warm_start_from_previous else None
+                if verbose:
+                    if u_warm is None:
+                        print("  init: none")
+                    else:
+                        print("  init: warm-start from previous frame")
 
-                if u_warm is not None:
-                    self.dic_mesh.set_initial_guess(u_warm)
-                init_disp = u_warm
+            if u_warm is not None:
+                self.dic_mesh.set_initial_guess(u_warm)
 
             cg_res = self.dic_mesh.run(Idef)
             if verbose:
@@ -234,7 +205,6 @@ class BatchMeshBased(BatchBase):
             info={
                 "stage": "batch_mesh_based",
                 "n_frames": len(per_frame),
-                "use_init_motion": self.config.use_init_motion,
                 "warm_start_from_previous": self.config.warm_start_from_previous,
                 "note": "stage-1 placeholder",
             }
@@ -262,6 +232,8 @@ def _plot_label(field: str) -> str:
 
 
 def _print_history(history, *, label: str) -> None:
+    if label.strip().upper() == "CG":
+        return
     if history is None:
         print(f"  {label}: history disabled")
         return

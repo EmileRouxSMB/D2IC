@@ -10,7 +10,7 @@ from jax import lax
 from functools import partial
 import warnings
 
-try:  # pragma: no cover - optional legacy dependency
+try:  # pragma: no cover - optional dependency
     from dm_pix import flat_nd_linear_interpolate
 except Exception:  # pragma: no cover
     flat_nd_linear_interpolate = None
@@ -44,10 +44,12 @@ class GlobalCGSolver(SolverBase):
         verbose: bool = False,
         interpolation: str = "cubic",
         use_map_coordinates: bool | None = None,
+        log_cg: bool = False,
     ) -> None:
         self._compiled = False
         self._solve_jit = None
         self._verbose = bool(verbose)
+        self._log_cg = bool(log_cg)
         if use_map_coordinates is not None:
             warnings.warn(
                 "use_map_coordinates is deprecated; use interpolation='cubic' or 'linear'.",
@@ -78,6 +80,7 @@ class GlobalCGSolver(SolverBase):
             tol,
             interpolation,
             verbose,
+            log_cg,
         ):
             return _cg_solve(
                 disp0,
@@ -95,11 +98,12 @@ class GlobalCGSolver(SolverBase):
                 tol,
                 interpolation,
                 verbose,
+                log_cg,
             )
 
         self._solve_jit = jax.jit(
             _cg_fn,
-            static_argnums=(11, 12, 13, 14),
+            static_argnums=(11, 12, 13, 14, 15),
             donate_argnums=(0,),
         )
         self._compiled = True
@@ -135,6 +139,7 @@ class GlobalCGSolver(SolverBase):
             float(state.config.tol),
             self._interpolation,
             bool(self._verbose),
+            bool(self._log_cg),
         ).compile()
 
     def solve(self, state: Any, def_image: Array) -> GlobalCGResult:
@@ -167,6 +172,7 @@ class GlobalCGSolver(SolverBase):
             float(state.config.tol),
             self._interpolation,
             bool(self._verbose),
+            bool(self._log_cg),
         )
 
         strain = jnp.zeros_like(disp_sol)
@@ -320,6 +326,7 @@ def _cg_solve(
     tol,
     interpolation,
     verbose,
+    log_cg,
 ):
     max_iter = int(max_iter)
     disp0 = jnp.asarray(disp0)
@@ -355,7 +362,7 @@ def _cg_solve(
         stop = grad_norm < tol
 
         def stop_branch(_):
-            if verbose:
+            if verbose and log_cg:
                 jax.debug.print(
                     "CG stop {k}: J={J:.3e}, |grad|={g:.3e}, alpha={a:.3e}",
                     k=k,
@@ -426,7 +433,7 @@ def _cg_solve(
                 ls_body,
                 (alpha_init, J_val, jnp.bool_(False)),
             )
-            if verbose:
+            if verbose and log_cg:
                 jax.debug.print(
                     "CG iter {k}: J={J:.3e}, |grad|={g:.3e}, alpha={a:.3e}",
                     k=k,

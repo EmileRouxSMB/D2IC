@@ -11,7 +11,7 @@ from .mesh_assets import MeshAssets
 from .dataclasses import MeshDICConfig, DICResult, DICDiagnostics
 from .types import Array
 
-try:  # pragma: no cover - legacy import availability depends on repo layout
+try:  # pragma: no cover - import availability depends on repo layout
     from ._legacy.dic import Dic as _LegacyDic
 except Exception:  # pragma: no cover
     _LegacyDic = None
@@ -27,15 +27,15 @@ class _LegacyState:
 
 class DICMeshBasedLegacy(DICBase):
     """
-    Adapter around the legacy ``Dic`` implementation so it fits the stage-1 API.
+    Adapter around the previous ``Dic`` implementation so it fits the stage-1 API.
 
     Stage-1 responsibilities:
       - call ``precompute_pixel_data`` once during ``prepare``
       - forward ``run`` calls to the requested solver flavor (CG or local GN)
-      - wrap the legacy outputs inside ``DICResult`` with placeholder strain
+      - wrap the outputs inside ``DICResult`` with placeholder strain
 
-    TODO(stage-2): progressively migrate the numerical kernels out of ``legacy_D2IC``
-    into the structured solvers introduced in the new architecture.
+    TODO(stage-2): progressively migrate the numerical kernels into the structured
+    solvers introduced in the new architecture.
     """
 
     def __init__(self, mesh_path: str, solver_mode: str, config: MeshDICConfig) -> None:
@@ -115,9 +115,10 @@ class DICMeshBasedLegacy(DICBase):
     @staticmethod
     def _apply_binning(image: Array, binning: float | int) -> Array:
         """
-        Downsample ``image`` by the binning factor used by the legacy solver.
+        Downsample ``image`` by the binning factor used by the previous solver.
 
-        TODO(stage-2): replace with the real binning/averaging logic from the legacy stack.
+        TODO(stage-2): replace with the real binning/averaging logic from the
+        prior implementation.
         """
         b = int(round(float(binning))) if binning else 1
         if b <= 1:

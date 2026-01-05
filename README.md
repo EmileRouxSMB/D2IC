@@ -48,9 +48,9 @@ sudo apt-get install -y gmsh libglu1 libxcursor-dev libxft2 libxinerama1 libfltk
 ## Typical workflow (new `d2ic` stack)
 1. **Prepare the ROI**: binary mask (`.tif/.bmp`) under `img/<case>/roi.*`.
 2. **Generate the mesh + assets**: `mesh, assets = mask_to_mesh_assets(mask=..., element_size_px=...)` and enrich with `make_mesh_assets`.
-3. **Instantiate configs**: `InitMotionConfig`, `MeshDICConfig`, `BatchConfig`.
-4. **Create solvers/pipelines**: `TranslationZNCCSolver`, `DICInitMotion`, `GlobalCGSolver`, `DICMeshBased`.
-5. **Run the batch**: `BatchMeshBased` orchestrates per-frame initialization, solver execution, and warm-start propagation.
+3. **Instantiate configs**: `MeshDICConfig`, `BatchConfig`.
+4. **Create solvers/pipelines**: `GlobalCGSolver`, `DICMeshBased`.
+5. **Run the batch**: `BatchMeshBased` orchestre l'execution par frame et la propagation du warm-start.
 6. **Post-process**: outputs already contain nodal displacement and Green–Lagrange strain; export NPZ/PNGs as needed.
 
 See the tutorials in `doc/` for end-to-end examples. The PlateHole script now relies entirely on `d2ic`.
@@ -93,12 +93,9 @@ Older tutorials may still import `D2IC.app_utils.run_pipeline_sequence`, which p
 import numpy as np
 from d2ic import (
     mask_to_mesh_assets,
-    InitMotionConfig,
     MeshDICConfig,
     BatchConfig,
-    DICInitMotion,
     DICMeshBased,
-    TranslationZNCCSolver,
     GlobalCGSolver,
     BatchMeshBased,
 )
@@ -111,11 +108,9 @@ mask = ...  # binary ROI (H,W)
 mesh, _ = mask_to_mesh_assets(mask=mask, element_size_px=16)
 assets = make_mesh_assets(mesh, with_neighbors=True)
 
-init_cfg = InitMotionConfig()
 mesh_cfg = MeshDICConfig(max_iters=200, tol=1e-3, reg_strength=0.1)
 batch_cfg = BatchConfig()
 
-dic_init = DICInitMotion(init_cfg, TranslationZNCCSolver(init_cfg))
 dic_mesh = DICMeshBased(mesh=mesh, solver=GlobalCGSolver(), config=mesh_cfg)
 
 batch = BatchMeshBased(
@@ -123,7 +118,6 @@ batch = BatchMeshBased(
     assets=assets,
     dic_mesh=dic_mesh,
     batch_config=batch_cfg,
-    dic_init=dic_init,
 )
 results = batch.run(def_images)
 u_all = np.stack([np.asarray(r.u_nodal) for r in results.results])

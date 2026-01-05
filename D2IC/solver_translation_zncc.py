@@ -26,7 +26,7 @@ class TranslationZNCCSolver(SolverBase):
     """
     Translation-only patch matching around each element center using ZNCC.
 
-    Implementation follows the legacy ``motion_init.translation_patch_matches_zncc``
+    Implementation follows the previous ``motion_init.translation_patch_matches_zncc``
     logic but keeps the heavy lifting in JAX for normalization/scoring while
     controlling memory via per-center evaluation.
     """

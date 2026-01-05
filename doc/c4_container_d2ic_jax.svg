@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-label="C4 container diagram for D2IC with JAX dependency">
+  <defs>
+    <style>
+      text { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; fill: #1a1a1a; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+
+      .bg { fill: #fbfaf6; }
+      .boundary { fill: #ffffff; stroke: #c8b89a; stroke-width: 2; }
+      .boundary-title { font-weight: 700; font-size: 16px; }
+
+      .person { fill: #fff3cd; stroke: #856404; stroke-width: 2; }
+      .container { fill: #d4edda; stroke: #155724; stroke-width: 2; }
+      .ext { fill: #d1ecf1; stroke: #0c5460; stroke-width: 2; }
+
+      .title { font-weight: 700; font-size: 15px; }
+      .tech { font-size: 12px; opacity: 0.85; }
+      .desc { font-size: 12px; opacity: 0.92; }
+
+      .arrow { stroke: #4a4a4a; stroke-width: 2; fill: none; }
+      .dashed { stroke-dasharray: 6 5; }
+
+      .legend-label { font-size: 12px; opacity: 0.9; }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#4a4a4a" />
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1200" height="720" />
+
+  <!-- Title -->
+  <text x="24" y="38" class="title" style="font-size:20px;">D2IC — C4 Container (dépendance: JAX uniquement)</text>
+  <text x="24" y="62" class="desc">Vue “container” pour une publication SoftwareX : structure logique batch → DIC → solver, et dépendance externe JAX.</text>
+
+  <!-- Person -->
+  <g transform="translate(40,140)">
+    <rect class="person" x="0" y="0" rx="12" ry="12" width="240" height="120" />
+    <text x="18" y="32" class="title">Utilisateur</text>
+    <text x="18" y="54" class="tech mono">Python</text>
+    <text x="18" y="78" class="desc">Configure et lance une séquence DIC</text>
+    <text x="18" y="96" class="desc">sur une série d’images.</text>
+  </g>
+
+  <!-- System boundary: D2IC -->
+  <g transform="translate(320,110)">
+    <rect class="boundary" x="0" y="0" rx="16" ry="16" width="820" height="520" />
+    <text x="18" y="34" class="boundary-title">Système : D2IC (bibliothèque Python)</text>
+
+    <!-- Containers inside boundary -->
+    <!-- Batch -->
+    <g transform="translate(40,70)">
+      <rect class="container" x="0" y="0" rx="12" ry="12" width="330" height="120" />
+      <text x="18" y="30" class="title">Batch Runner</text>
+      <text x="18" y="52" class="tech mono">BatchMeshBased, BatchBase</text>
+      <text x="18" y="76" class="desc">Orchestration : prepare(),</text>
+      <text x="18" y="94" class="desc">boucle frame, export (optionnel).</text>
+    </g>
+
+    <!-- DIC pipelines -->
+    <g transform="translate(410,70)">
+      <rect class="container" x="0" y="0" rx="12" ry="12" width="370" height="120" />
+      <text x="18" y="30" class="title">Pipelines DIC</text>
+      <text x="18" y="52" class="tech mono">DICMeshBased, DICInitMotion</text>
+      <text x="18" y="76" class="desc">prepare() + run() sur images</text>
+      <text x="18" y="94" class="desc">(init guess + diagnostic/result).</text>
+    </g>
+
+    <!-- Solver stack -->
+    <g transform="translate(40,230)">
+      <rect class="container" x="0" y="0" rx="12" ry="12" width="330" height="150" />
+      <text x="18" y="30" class="title">Solver Stack</text>
+      <text x="18" y="52" class="tech mono">SolverBase + impls</text>
+      <text x="18" y="74" class="desc">compile(assets) + solve(state, def_image)</text>
+      <text x="18" y="96" class="desc">GlobalCGSolver / LocalGaussNewtonSolver</text>
+      <text x="18" y="118" class="desc">TranslationZNCCSolver (init motion)</text>
+    </g>
+
+    <!-- Assets & data -->
+    <g transform="translate(410,230)">
+      <rect class="container" x="0" y="0" rx="12" ry="12" width="370" height="150" />
+      <text x="18" y="30" class="title">Assets & Data</text>
+      <text x="18" y="52" class="tech mono">Mesh, MeshAssets, configs, results</text>
+      <text x="18" y="74" class="desc">Pré-calculs (neighbors/pixels),</text>
+      <text x="18" y="96" class="desc">structures d’échange (DICResult, BatchResult).</text>
+    </g>
+
+    <!-- Internal arrows (within system boundary) -->
+    <!-- Batch -> DIC -->
+    <path class="arrow" marker-end="url(#arrowhead)" d="M 200 190 C 240 210, 340 210, 400 190" />
+    <text x="270" y="210" class="desc">appelle</text>
+
+    <!-- DIC -> Solver -->
+    <path class="arrow" marker-end="url(#arrowhead)" d="M 600 190 C 600 220, 300 220, 300 230" />
+    <text x="520" y="224" class="desc">délègue</text>
+
+    <!-- DIC <-> Assets -->
+    <path class="arrow dashed" marker-end="url(#arrowhead)" d="M 600 190 C 650 205, 700 210, 740 230" />
+    <text x="660" y="214" class="desc">utilise</text>
+
+    <!-- Solver -> Assets -->
+    <path class="arrow dashed" marker-end="url(#arrowhead)" d="M 200 380 C 240 410, 520 410, 600 380" />
+    <text x="395" y="414" class="desc">consomme</text>
+  </g>
+
+  <!-- External dependency: JAX -->
+  <g transform="translate(900,120)">
+    <rect class="ext" x="0" y="0" rx="12" ry="12" width="260" height="110" />
+    <text x="18" y="30" class="title">JAX</text>
+    <text x="18" y="52" class="tech mono">Librairie externe</text>
+    <text x="18" y="76" class="desc">Accélération/JIT</text>
+    <text x="18" y="94" class="desc">pour les solveurs.</text>
+  </g>
+
+  <!-- Arrow: Solver stack -> JAX (outside boundary) -->
+  <path class="arrow" marker-end="url(#arrowhead)" d="M 640 420 C 770 330, 820 250, 900 200" />
+  <text x="760" y="290" class="desc">dépend de</text>
+
+  <!-- Arrow: User -> Batch (outside boundary) -->
+  <path class="arrow" marker-end="url(#arrowhead)" d="M 280 200 C 310 200, 320 200, 360 220" />
+  <text x="305" y="188" class="desc">lance</text>
+
+  <!-- Legend -->
+  <g transform="translate(40,660)">
+    <rect class="person" x="0" y="0" rx="10" ry="10" width="140" height="40" />
+    <text x="14" y="25" class="legend-label">Personne</text>
+
+    <rect class="container" x="160" y="0" rx="10" ry="10" width="170" height="40" />
+    <text x="174" y="25" class="legend-label">Container D2IC</text>
+
+    <rect class="ext" x="350" y="0" rx="10" ry="10" width="170" height="40" />
+    <text x="364" y="25" class="legend-label">Dépendance externe</text>
+  </g>
+</svg>
+

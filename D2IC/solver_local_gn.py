@@ -170,7 +170,7 @@ class LocalGaussNewtonSolver(SolverBase):
 
 
 # ---------------------------------------------------------------------
-# Core kernels (ported from legacy)
+# Core kernels (ported from previous implementation)
 # ---------------------------------------------------------------------
 
 def _compute_image_gradient_np(im: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
