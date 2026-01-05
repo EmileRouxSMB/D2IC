@@ -20,7 +20,7 @@ from .strain import (
     green_lagrange_to_voigt,
 )
 
-try:  # pragma: no cover - optional dependency until fully migrated
+try:  # pragma: no cover - optional dependency
     from .pixel_assets import build_pixel_assets
 except Exception:  # pragma: no cover
     build_pixel_assets = None
@@ -37,7 +37,7 @@ class MeshDICState:
 
 
 class DICMeshBased(DICBase):
-    """Pure DIC pipeline using the new solver stack."""
+    """Pure DIC pipeline using the solver stack."""
 
     def __init__(self, mesh: Mesh, solver: SolverBase, config: MeshDICConfig) -> None:
         self.mesh = mesh
@@ -87,7 +87,7 @@ class DICMeshBased(DICBase):
         u_nodal = sol.u_nodal
         strain = sol.strain
         assets = self._state.assets
-        diag_info = {"stage": "mesh_based", "note": "stage-2 placeholder"}
+        diag_info = {"stage": "mesh_based"}
         if getattr(sol, "n_iters", None) is not None:
             diag_info["n_iters"] = int(sol.n_iters)
         if getattr(sol, "history", None) is not None:

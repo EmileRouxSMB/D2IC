@@ -25,11 +25,10 @@ class BatchMeshBased(BatchBase):
     """
     Concrete batch runner for mesh-based DIC.
 
-    Stage-1:
     - Uses injected DICMeshBased instances.
-    - before(): prepares both pipelines with ref_image/assets
-    - sequence(): runs per-frame DICMeshBased.run(def_image), optionally using a propagator
-    - end(): placeholder post-processing
+    - before(): prepares both pipelines with ref_image/assets.
+    - sequence(): runs per-frame DICMeshBased.run(def_image), optionally using a propagator.
+    - end(): optional post-processing hook.
 
     Notes:
     - This class assumes ref_image and assets are fixed for the whole batch.
@@ -177,7 +176,7 @@ class BatchMeshBased(BatchBase):
                 should_export = export_frames is None or k in export_frames
                 if should_export:
                     prefix = png_dir / f"frame_{k:04d}"
-                    # Legacy-like behavior: one plotter + one figure reused across fields.
+                    # One plotter + one figure reused across fields.
                     plotter = DICPlotter(
                         result=res,
                         mesh=self.assets.mesh,
@@ -206,13 +205,12 @@ class BatchMeshBased(BatchBase):
                 "stage": "batch_mesh_based",
                 "n_frames": len(per_frame),
                 "warm_start_from_previous": self.config.warm_start_from_previous,
-                "note": "stage-1 placeholder",
             }
         )
         return BatchResult(results=per_frame, diagnostics=diag)
 
     def end(self, result: BatchResult) -> BatchResult:
-        # Stage-1 placeholder for post-processing (e.g. stacking, saving, summary stats).
+        # Placeholder for post-processing (e.g. stacking, saving, summary stats).
         # Keep as identity; update diagnostics as needed.
         updated = BatchDiagnostics(info={**result.diagnostics.info, "post": "end() placeholder"})
         return BatchResult(results=result.results, diagnostics=updated)

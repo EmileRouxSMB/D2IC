@@ -231,7 +231,7 @@ def run_pipeline_sequence() -> Tuple[np.ndarray, np.ndarray]:
         print(f"Saved mesh to {mesh_path}")
 
     if VEL_SMOOTHING != 0.5:
-        print("Note: velocity smoothing is not currently exposed (stage-2 TODO).")
+        print("Note: velocity smoothing is not currently exposed.")
 
     return u_stack, strain_stack
 

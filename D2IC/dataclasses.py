@@ -9,7 +9,6 @@ from .types import Array
 class InitMotionConfig:
     """
     Configuration for coarse motion initialization (element-center matching only).
-    Stage-1: placeholders only.
     """
     win: int = 41                 # patch size (odd)
     search: int = 24              # translation search radius (pixels)
@@ -22,7 +21,6 @@ class InitMotionConfig:
 class MeshDICConfig:
     """
     Configuration for fine mesh-based DIC.
-    Stage-1: placeholders only.
     """
     max_iters: int = 50
     tol: float = 1e-6
@@ -62,15 +60,14 @@ class DICResult:
 class BatchConfig:
     """
     Configuration for batch DIC processing.
-    Stage-1: minimal knobs.
     """
-    # If True, run init motion on each frame to get u0 guess (placeholder flow)
+    # If True, run init motion on each frame to get a u0 guess
     use_init_motion: bool = True
 
     # If True, warm-start each frame with previous frame result (common in DIC sequences)
     warm_start_from_previous: bool = True
 
-    # Stage-2 flags for controlling init-motion usage across frames
+    # Flags for controlling init-motion usage across frames
     init_motion_first_frame_only: bool = False
     init_motion_every_frame: bool = False
     prefer_init_motion_over_propagation: bool = False

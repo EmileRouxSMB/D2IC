@@ -24,7 +24,6 @@ from .strain import (
 
 from .dic_init_motion import DICInitMotion
 from .dic_mesh_based import DICMeshBased
-from .dic_mesh_based_legacy import DICMeshBasedLegacy
 from .batch_base import BatchBase
 from .batch_mesh_based import BatchMeshBased
 from .propagator_base import DisplacementPropagatorBase
@@ -65,7 +64,6 @@ __all__ = [
     "small_strain_nodes_lsq",
     "DICInitMotion",
     "DICMeshBased",
-    "DICMeshBasedLegacy",
     "BatchBase",
     "BatchMeshBased",
     "DisplacementPropagatorBase",

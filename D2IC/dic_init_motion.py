@@ -24,9 +24,9 @@ class DICInitMotion(DICBase):
     """
     Coarse initialization using translation-only ZNCC matches at element centers.
 
-    Stage-2 placeholder: extrapolate the sparse center displacements to nodal
-    values via inverse-distance weighting (IDW). Later revisions can swap in
-    RBF or least-squares projections.
+    Extrapolates the sparse center displacements to nodal values via
+    inverse-distance weighting (IDW). This can be replaced by RBF or
+    least-squares projections if needed.
     """
 
     def __init__(self, config: InitMotionConfig, solver: SolverBase) -> None:
@@ -55,7 +55,7 @@ class DICInitMotion(DICBase):
             info={
                 "stage": "init_motion",
                 "matches": int(np.sum(~np.isnan(sol.scores))),
-                "note": "IDW projection placeholder",
+                "note": "IDW projection",
             }
         )
         return DICResult(u_nodal=u_nodal, strain=strain, diagnostics=diag, history=None)

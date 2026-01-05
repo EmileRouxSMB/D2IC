@@ -34,8 +34,6 @@ class LocalGNResult:
 class LocalGaussNewtonSolver(SolverBase):
     """
     Local Gauss-Newton solver for mesh DIC (e.g., nodal local updates).
-    Stage-1: placeholders only.
-    Stage-2: migrate your current local "gauss-newton / spring" logic here.
     """
 
     def __init__(
@@ -53,7 +51,7 @@ class LocalGaussNewtonSolver(SolverBase):
         self._omega = float(omega)
         if use_map_coordinates is not None:
             warnings.warn(
-                "use_map_coordinates is deprecated; use interpolation='cubic' or 'linear'.",
+                "use_map_coordinates is kept for backward compatibility; use interpolation='cubic' or 'linear'.",
                 DeprecationWarning,
                 stacklevel=2,
             )

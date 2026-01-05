@@ -109,7 +109,7 @@ def mask_to_mesh_gmsh(
 
     Parameters mirror ``mask_to_mesh`` but the meshing is performed via the
     Gmsh Python API followed by ``meshio`` import, enabling more robust
-    boundary handling in stage-2 workflows.
+    boundary handling for complex ROIs.
     """
     try:
         import gmsh  # type: ignore

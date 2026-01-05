@@ -14,7 +14,7 @@ class SolverBase(ABC):
     def compile(self, assets: Any) -> None:
         """
         Prepare/jit functions based on asset shapes.
-        Stage-1: may be a no-op, but should exist.
+        May be a no-op for some solvers, but should exist.
         """
         raise NotImplementedError
 

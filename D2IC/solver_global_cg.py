@@ -35,8 +35,6 @@ class GlobalCGResult:
 class GlobalCGSolver(SolverBase):
     """
     Global CG-based solver for mesh DIC.
-    Stage-1: placeholders only.
-    Stage-2: migrate your current global CG (and JAX core calls) into this file.
     """
 
     def __init__(
@@ -52,7 +50,7 @@ class GlobalCGSolver(SolverBase):
         self._log_cg = bool(log_cg)
         if use_map_coordinates is not None:
             warnings.warn(
-                "use_map_coordinates is deprecated; use interpolation='cubic' or 'linear'.",
+                "use_map_coordinates is kept for backward compatibility; use interpolation='cubic' or 'linear'.",
                 DeprecationWarning,
                 stacklevel=2,
             )

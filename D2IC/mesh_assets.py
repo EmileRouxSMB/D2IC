@@ -12,8 +12,8 @@ from .types import Array
 @dataclass(frozen=True)
 class Mesh:
     """
-    Minimal mesh container (stage-1).
-    Replace/extend with your real mesh model in stage-2 migration.
+    Minimal mesh container.
+    Replace/extend with your own mesh model as needed.
     """
     nodes_xy: Array        # (Nn, 2)
     elements: Array        # (Ne, nen) connectivity (indices into nodes)
@@ -23,7 +23,7 @@ class Mesh:
 class MeshAssets:
     """
     Precomputations derived from Mesh for fast evaluation.
-    Keep shapes/dtypes stable for JAX compilation (stage-1 minimal).
+    Keep shapes/dtypes stable for JAX compilation.
     """
     mesh: Mesh
     element_centers_xy: Array  # (Ne, 2)
@@ -31,7 +31,7 @@ class MeshAssets:
     node_neighbor_degree: Optional[Array] = None
     pixel_data: "PixelAssets" | None = None
 
-    # TODO(stage-2): pixel->element lookup, shape functions at pixels, etc.
+    # Pixel-level lookup (pixel->element, shape functions, etc.) is stored in PixelAssets.
 
 
 @dataclass(frozen=True)
@@ -54,7 +54,6 @@ class PixelAssets:
 def compute_element_centers(mesh: Mesh) -> Array:
     """
     Compute element centers (Ne, 2) as the mean of node coordinates.
-    Stage-1: simple mean over element nodes.
     """
     elem_nodes = mesh.nodes_xy[mesh.elements]  # (Ne, nen, 2)
     return jnp.mean(elem_nodes, axis=1)
