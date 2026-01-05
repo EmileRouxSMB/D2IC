@@ -1,17 +1,15 @@
 """
-Step-by-step (non-notebook) DIC workflow on the PlateHole image sequence using the
-refactored ``d2ic`` package (mask→contour→Gmsh mesh + batch pipeline + strain).
-
+Step-by-step (non-notebook) DIC workflow on the "ButterFly" image SEQUENCE.
 Designed for users not familiar with Python: simply tweak the parameters below.
 
 How to run:
-    python doc/03_tutorial_platehole_sequence_step_by_step.py
+    python doc/04_tutorial_buterFly_sequence_step_by_step.py
 
 What the script does automatically:
  1) generate the mesh from the ROI binary mask,
- 2) estimate the displacements frame by frame with BatchMeshBased,
- 3) compute nodal strains via the new strain module,
- 4) export PNGs of the U1/U2/E11/E22/E12 overlay fields,
+ 2) estimate the displacements frame by frame,
+ 3) compute nodal strains,
+ 4) export PNGs of the Ux, Uy, Exx/Exy/Eyy fields,
  5) save all fields compactly into a .npz file.
 """
 
@@ -36,6 +34,12 @@ try:  # optional TIFF reader fallback
 except Exception:  # pragma: no cover
     tifffile = None
 
+try:  # optional mesh writer
+    import meshio
+except Exception:  # pragma: no cover
+    meshio = None
+
+
 from d2ic import (
     InitMotionConfig,
     MeshDICConfig,
@@ -47,12 +51,11 @@ from d2ic import (
     TranslationZNCCSolver,
     GlobalCGSolver,
     LocalGaussNewtonSolver,
-    BatchMeshBased,
     PreviousDisplacementPropagator,
     ConstantVelocityPropagator,
     DICPlotter,
 )
-from d2ic.pixel_assets import build_pixel_assets
+from d2ic import BatchMeshBased
 from d2ic.mesh_assets import make_mesh_assets
 
 # Non-interactive backend so figures can be saved without a display.
@@ -60,7 +63,7 @@ matplotlib.use("Agg")
 
 
 def _configure_jax_platform(preferred: str = "gpu", fallback: str = "cpu") -> None:
-    """Force a backend when available, otherwise fall back to CPU to avoid crashes."""
+    """Try to use the preferred accelerator, but fall back to CPU when unavailable."""
     try:
         devices = jax.devices(preferred)
     except RuntimeError:
@@ -74,15 +77,13 @@ def _configure_jax_platform(preferred: str = "gpu", fallback: str = "cpu") -> No
 
 
 _configure_jax_platform()
-# enable 64-bit floats for better accuracy (can be disabled to gain speed on GPU)
-jax.config.update("jax_enable_x64", True)
 
 # --------------------------------------------------------------------------- #
 #                PARAMETERS TO ADJUST (SECTION FOR NON-EXPERTS)               #
 # --------------------------------------------------------------------------- #
+# Script folder (this file lives inside `D2IC/doc/`).
 PWD = Path(__file__).resolve().parent
 
-# Folder containing the image sequence + ROI mask.
 IMG_DIR = PWD / "img" / "PlateHole"
 REF_IMAGE_NAME = "ohtcfrp_00.tif"  # reference image
 MASK_FILENAME = "roi.tif"  # binary ROI mask
@@ -95,41 +96,42 @@ OUT_DIR = PWD / "_outputs" / "sequence_platehole"
 MESH_ELEMENT_SIZE_PX = 40.0
 
 # Global DIC (CG solver) and local refinement parameters.
-DIC_MAX_ITER = 4000
-DIC_TOL = 1e-3
-DIC_REG_TYPE = "spring"
-DIC_ALPHA_REG = 1e-4
-LOCAL_SWEEPS = 0  # set to 0 to disable nodal refinement
-INTERPOLATION = "cubic"  # "cubic" (im_jax) or "linear" (dm_pix/bilinear)
+DIC_MAX_ITER = 400
+DIC_TOL = 1e-2
+DIC_ALPHA_REG = 1e-2
+LOCAL_SWEEPS = 3  # set to 0 to disable nodal refinement
 
 # Initialization options for subsequent frames.
 USE_VELOCITY = True
-VEL_SMOOTHING = 0.5  # TODO: not yet exposed in propagators
+VEL_SMOOTHING = 0.5
 
 # Strain computation parameters.
-STRAIN_K_RING = 2  # kept for parity; current pipeline uses strain_gauge_length only
-STRAIN_GAUGE_LENGTH = 40.0
+STRAIN_GAUGE_LENGTH = 80.0
 
 # Frames to export (leave None for all).
-FRAMES_TO_PLOT = None
+FRAMES_TO_PLOT = None #None
 
 # Image export settings: colormap and alpha.
 PLOT_CMAP = "jet"
-PLOT_ALPHA = 0.75
+PLOT_ALPHA = 0.6
 PLOT_MESH = True
 PLOT_FIELDS = ("u1", "u2", "e11", "e22", "e12")
 PLOT_INCLUDE_DISCREPANCY = False
 
-# Sparse-match initialization (set False to start from zero displacement).
+# Sparse-match initialization toggle.
 ENABLE_INITIAL_GUESS = True
 # Downsample factor for reference/deformed images (1 keeps native resolution).
 IMAGE_BINNING = 1
+# Interpolation used inside solvers: "cubic" (im_jax) or "linear" (dm_pix/bilinear fallback).
+INTERPOLATION = "cubic"
+# Debug prints from inside JAX-compiled loops (CG iterations).
+VERBOSE = True
 
 
 def run_pipeline_sequence() -> Tuple[np.ndarray, np.ndarray]:
-    """Run the full d2ic pipeline using the parameters defined above."""
-    if DIC_REG_TYPE != "spring":
-        raise ValueError("This tutorial currently supports only 'spring' regularization.")
+    """Run the full `d2ic` batch pipeline using the parameters defined above."""
+    if IMAGE_BINNING < 1:
+        raise ValueError("IMAGE_BINNING must be >= 1.")
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     png_dir = OUT_DIR / "png"
@@ -176,11 +178,12 @@ def run_pipeline_sequence() -> Tuple[np.ndarray, np.ndarray]:
         tol=DIC_TOL,
         reg_strength=DIC_ALPHA_REG,
         strain_gauge_length=STRAIN_GAUGE_LENGTH,
+        save_history=True,
     )
 
     dic_mesh = DICMeshBased(
         mesh=mesh,
-        solver=GlobalCGSolver(interpolation=INTERPOLATION),
+        solver=GlobalCGSolver(interpolation=INTERPOLATION, verbose=VERBOSE),
         config=mesh_cfg,
     )
     dic_init = DICInitMotion(init_cfg, TranslationZNCCSolver(init_cfg)) if ENABLE_INITIAL_GUESS else None
@@ -190,27 +193,30 @@ def run_pipeline_sequence() -> Tuple[np.ndarray, np.ndarray]:
         warm_start_from_previous=True,
         init_motion_every_frame=ENABLE_INITIAL_GUESS,
         prefer_init_motion_over_propagation=True,
+        verbose=True,
+        progress=True,
+        export_png=True,
+        export_frames=FRAMES_TO_PLOT,
+        png_dir=str(OUT_DIR / "png"),
+        plot_fields=PLOT_FIELDS,
+        plot_include_discrepancy=PLOT_INCLUDE_DISCREPANCY,
+        plot_cmap=PLOT_CMAP,
+        plot_alpha=PLOT_ALPHA,
+        plot_mesh=PLOT_MESH,
+        plot_dpi=200,
+        plot_binning=IMAGE_BINNING,
+        plot_projection="fast",
     )
 
     propagator = ConstantVelocityPropagator() if USE_VELOCITY else PreviousDisplacementPropagator()
-    batch = BatchMeshBased(
-        ref_image=ref_image,
-        assets=assets,
-        dic_mesh=dic_mesh,
-        batch_config=batch_cfg,
-        dic_init=dic_init,
-        propagator=propagator,
-    )
-
-    batch_result = batch.run(def_images)
-    per_frame = batch_result.results
-
+    dic_local = None
     if LOCAL_SWEEPS > 0:
         local_cfg = MeshDICConfig(
             max_iters=LOCAL_SWEEPS,
             tol=DIC_TOL,
             reg_strength=DIC_ALPHA_REG,
             strain_gauge_length=STRAIN_GAUGE_LENGTH,
+            save_history=True,
         )
         local_solver = LocalGaussNewtonSolver(
             lam=0.1,
@@ -219,17 +225,28 @@ def run_pipeline_sequence() -> Tuple[np.ndarray, np.ndarray]:
             interpolation=INTERPOLATION,
         )
         dic_local = DICMeshBased(mesh=mesh, solver=local_solver, config=local_cfg)
-        dic_local.prepare(ref_image, assets)
-        refined = []
-        for Idef, res in zip(def_images, per_frame):
-            dic_local.set_initial_guess(res.u_nodal)
-            refined.append(dic_local.run(Idef))
-        per_frame = refined
+
+    batch = BatchMeshBased(
+        ref_image=ref_image,
+        assets=assets,
+        dic_mesh=dic_mesh,
+        batch_config=batch_cfg,
+        dic_init=dic_init,
+        dic_local=dic_local,
+        propagator=propagator,
+    )
+
+    print("Preparing pipelines (JIT compile may take a while on first run)...")
+    print(f"Running batch on {len(def_images)} frame(s).")
+    batch_result = batch.run(def_images)
+    print("Batch run completed.")
+    per_frame = batch_result.results
+
+    # Local sweeps are now chained inside BatchMeshBased if LOCAL_SWEEPS > 0.
 
     nodes_xy = np.asarray(assets.mesh.nodes_xy)
     u_stack = np.stack([np.asarray(r.u_nodal) for r in per_frame], axis=0)
     strain_stack = np.stack([np.asarray(r.strain) for r in per_frame], axis=0)
-    pixel_assets = build_pixel_assets(mesh=assets.mesh, ref_image=ref_image, binning=IMAGE_BINNING)
 
     np.savez_compressed(
         OUT_DIR / "fields_sequence.npz",
@@ -241,31 +258,20 @@ def run_pipeline_sequence() -> Tuple[np.ndarray, np.ndarray]:
     )
     print(f"Saved NPZ results to {OUT_DIR/'fields_sequence.npz'}")
 
-    frames_to_plot = _resolve_frames(len(per_frame), FRAMES_TO_PLOT)
-    _export_field_pngs(
-        results=per_frame,
-        mesh=assets.mesh,
-        frames=frames_to_plot,
-        png_dir=png_dir,
-        def_images=def_images,
-        def_paths=def_paths,
-        ref_image=ref_image,
-        binning=IMAGE_BINNING,
-        pixel_assets=pixel_assets,
-    )
+    if meshio is None:
+        print("meshio is not available; skipping mesh export.")
+    else:
+        mesh_path = OUT_DIR / "roi_mesh.msh"
+        points = np.column_stack([nodes_xy, np.zeros((nodes_xy.shape[0],), dtype=nodes_xy.dtype)])
+        elements = np.asarray(assets.mesh.elements, dtype=np.int32)
+        meshio_mesh = meshio.Mesh(points=points, cells=[("quad", elements)])
+        meshio.write(str(mesh_path), meshio_mesh, file_format="gmsh")
+        print(f"Saved mesh to {mesh_path}")
+
     if VEL_SMOOTHING != 0.5:
         print("Note: velocity smoothing is not currently exposed (stage-2 TODO).")
 
     return u_stack, strain_stack
-
-
-def _resolve_frames(n_frames: int, frames: Sequence[int] | None) -> Sequence[int]:
-    if frames is None:
-        return list(range(n_frames))
-    valid = [f for f in frames if 0 <= f < n_frames]
-    if not valid:
-        raise ValueError("FRAMES_TO_PLOT does not contain any valid indices.")
-    return valid
 
 
 def _list_deformed_images(img_dir: Path, pattern: str, ref_name: str) -> list[Path]:
@@ -287,7 +293,7 @@ def _imread_gray(path: Path) -> np.ndarray:
             continue
         data = np.asarray(arr)
         if data.ndim == 3:
-            if data.shape[2] == 4:  # drop alpha if present (ROI masks often encode data in RGB only)
+            if data.shape[2] == 4:  # drop alpha
                 data = data[..., :3]
             data = data.mean(axis=2)
         return data.astype(np.float32, copy=False)
@@ -330,62 +336,6 @@ def _downsample_image(image: np.ndarray, binning: int) -> np.ndarray:
     trimmed = image[: new_h * binning, : new_w * binning]
     reshaped = trimmed.reshape(new_h, binning, new_w, binning)
     return reshaped.mean(axis=(1, 3))
-
-
-def _export_field_pngs(
-    results: Sequence,
-    mesh,
-    frames: Iterable[int],
-    png_dir: Path,
-    def_images: Sequence[np.ndarray],
-    def_paths: Sequence[Path],
-    ref_image: np.ndarray,
-    binning: int,
-    pixel_assets,
-) -> None:
-    fields = list(PLOT_FIELDS)
-    if PLOT_INCLUDE_DISCREPANCY:
-        fields.append("discrepancy")
-    for frame_idx in frames:
-        prefix = png_dir / f"frame_{frame_idx:04d}"
-        def_image = def_images[frame_idx]
-        frame_name = Path(def_paths[frame_idx]).name
-        print(f"[Frame {frame_idx:04d}] Plotting overlays for {frame_name}")
-        plotter = DICPlotter(
-            result=results[frame_idx],
-            mesh=mesh,
-            def_image=def_image,
-            ref_image=ref_image,
-            binning=binning,
-            pixel_assets=pixel_assets,
-        )
-        last_fig = None
-        for field in fields:
-            fig, ax = plotter.plot(
-                field=field,
-                image_alpha=PLOT_ALPHA,
-                cmap=PLOT_CMAP,
-                plotmesh=PLOT_MESH,
-            )
-            label = _plot_label(field)
-            ax.set_title(f"{label} (frame {frame_idx})")
-            fig.savefig(prefix.with_name(f"{prefix.name}_{label}.png"), dpi=200)
-            last_fig = fig
-        if last_fig is not None:
-            plt.close(last_fig)
-
-
-def _plot_label(field: str) -> str:
-    key = field.strip().lower().replace("_", "")
-    mapping = {
-        "u1": "U1",
-        "u2": "U2",
-        "e11": "E11",
-        "e22": "E22",
-        "e12": "E12",
-        "discrepancy": "Discrepancy",
-    }
-    return mapping.get(key, field)
 
 
 def main() -> None:
