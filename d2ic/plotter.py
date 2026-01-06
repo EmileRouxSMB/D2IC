@@ -119,7 +119,7 @@ class DICPlotter:
     @staticmethod
     def _normalize_field_key(field: str) -> str:
         key = field.strip().lower()
-        key = re.sub(r"[$\\\\{}()\\s]", "", key).replace("_", "")
+        key = re.sub(r"[\s$\\{}()]", "", key).replace("_", "")
         return key
 
     def _load_user_fields(self) -> None:
