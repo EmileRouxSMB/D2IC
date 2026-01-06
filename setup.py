@@ -23,7 +23,7 @@ setup(
         "matplotlib",
         "scikit-image",
         "dm_pix",
-        "im-jax"
+        "im-jax",
         "gmsh",
         "meshio",
     ],
