@@ -56,10 +56,9 @@ MASK_FILENAME = "roi.tif"
 IMAGE_PATTERN = "Sample3-*.tif"
 OUT_DIR = ROOT / "_outputs" / "validation_sample3"
 MESH_ELEMENT_SIZE_PX = 40.0
-DIC_MAX_ITER = 400
-DIC_TOL = 1e-3
-DIC_REG_TYPE = "spring"
-DIC_ALPHA_REG = 1e-2
+max_iters = 400
+tol = 1e-3
+reg_strength = 1e-2
 USE_GMSH_MESH = False
 INTERPOLATION = "cubic"  # "cubic" (im_jax) or "linear" (dm_pix/bilinear)
 GROUND_TRUTH_DEFAULT_STEP = 0.1  # px per frame if parsing fails
@@ -103,8 +102,6 @@ def _load_mask(path: Path) -> np.ndarray:
 
 def _solve_sequence(im_ref: np.ndarray, images_def: List[np.ndarray]) -> np.ndarray:
     """Run DIC sequentially with zero initial guess and no refinements."""
-    if DIC_REG_TYPE != "spring":
-        raise ValueError("This validation expects spring regularization.")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     mask_path = IMG_DIR / MASK_FILENAME
     if not mask_path.exists():
@@ -146,9 +143,9 @@ def _solve_sequence(im_ref: np.ndarray, images_def: List[np.ndarray]) -> np.ndar
         print(f"[timing] mesh_structured: {(time.perf_counter() - t_mesh):.2f}s")
 
     mesh_cfg = MeshDICConfig(
-        max_iters=DIC_MAX_ITER,
-        tol=DIC_TOL,
-        reg_strength=DIC_ALPHA_REG,
+        max_iters=max_iters,
+        tol=tol,
+        reg_strength=reg_strength,
     )
     dic_mesh = DICMeshBased(
         mesh=mesh,

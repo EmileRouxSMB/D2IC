@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Optional
 
+import numpy as np
 import jax.numpy as jnp
 
 from .dic_base import DICBase
@@ -19,6 +20,7 @@ from .strain import (
     compute_green_lagrange_strain_nodes_lsq,
     green_lagrange_to_voigt,
 )
+from .discrepancy import compute_discrepancy_map_ref
 
 try:  # pragma: no cover - optional dependency
     from .pixel_assets import build_pixel_assets
@@ -96,6 +98,7 @@ class DICMeshBased(DICBase):
         strain = sol.strain
         assets = self._state.assets
         diag_info = {"stage": "mesh_based"}
+        pixel_maps = {}
         if getattr(sol, "n_iters", None) is not None:
             diag_info["n_iters"] = int(sol.n_iters)
         if getattr(sol, "history", None) is not None:
@@ -122,6 +125,20 @@ class DICMeshBased(DICBase):
             strain = jnp.zeros((u_nodal.shape[0], 3), dtype=u_nodal.dtype)
             diag_info["strain"] = "skipped_no_neighbors"
 
+        if bool(getattr(self.config, "compute_discrepancy_map", False)):
+            if assets.pixel_data is None:
+                diag_info["discrepancy"] = "skipped_no_pixel_assets"
+            else:
+                disc_map, disc_rms = compute_discrepancy_map_ref(
+                    ref_image=self._state.ref_image,
+                    def_image=def_image,
+                    u_nodal=u_nodal,
+                    pixel_assets=assets.pixel_data,
+                )
+                pixel_maps["discrepancy_ref"] = np.asarray(disc_map, dtype=np.float32)
+                diag_info["discrepancy"] = "discrepancy_ref"
+                diag_info["discrepancy_rms"] = float(disc_rms)
+
         diag = DICDiagnostics(info=diag_info)
         history = getattr(sol, "history", None)
-        return DICResult(u_nodal=u_nodal, strain=strain, diagnostics=diag, history=history)
+        return DICResult(u_nodal=u_nodal, strain=strain, diagnostics=diag, history=history, pixel_maps=pixel_maps)

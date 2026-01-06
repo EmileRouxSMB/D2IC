@@ -158,11 +158,16 @@ class BatchMeshBased(BatchBase):
             per_frame.append(res)
             if save_per_frame:
                 out_path = per_frame_dir / f"frame_{k:04d}.npz"
-                np.savez_compressed(
-                    out_path,
-                    u_nodal=np.asarray(res.u_nodal),
-                    strain=np.asarray(res.strain),
-                )
+                payload = {
+                    "u_nodal": np.asarray(res.u_nodal),
+                    "strain": np.asarray(res.strain),
+                }
+                pixel_maps = getattr(res, "pixel_maps", None)
+                if isinstance(pixel_maps, dict):
+                    disc = pixel_maps.get("discrepancy_ref")
+                    if disc is not None:
+                        payload["discrepancy_ref"] = np.asarray(disc)
+                np.savez_compressed(out_path, **payload)
                 if verbose:
                     print(f"  save: {out_path}")
 

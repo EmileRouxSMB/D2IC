@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 import numpy as np
+import re
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
@@ -61,6 +62,9 @@ class DICPlotter:
         self._validate_inputs()
         self._strain_fields = self._normalize_strain(result.strain)
         self._u_nodal = np.asarray(self._result.u_nodal)
+        self._user_scalar_fields: Dict[str, np.ndarray] = {}
+        self._user_scalar_labels: Dict[str, str] = {}
+        self._user_scalar_names: Dict[str, str] = {}
 
         pixel_ref = self._ref_image if self._ref_image is not None else self._def_image
 
@@ -104,12 +108,79 @@ class DICPlotter:
             self._ux_map = self._scatter_pixel_values(self._pixel_displacement_ref[:, 0])
             self._uy_map = self._scatter_pixel_values(self._pixel_displacement_ref[:, 1])
         self._scalar_field_cache: Dict[str, np.ndarray] = {}
+        self._load_user_fields()
 
         self._fig: Optional[Figure] = None
         self._ax: Optional[Axes] = None
         self._overlay_im = None
         self._colorbar = None
         self._mesh_collection: Optional[PolyCollection] = None
+
+    @staticmethod
+    def _normalize_field_key(field: str) -> str:
+        key = field.strip().lower()
+        key = re.sub(r"[$\\\\{}()\\s]", "", key).replace("_", "")
+        return key
+
+    def _load_user_fields(self) -> None:
+        fields: Dict[str, object] = {}
+        result_fields = getattr(self._result, "fields", None)
+        if isinstance(result_fields, dict):
+            fields.update(result_fields)
+
+        diagnostics_fields = None
+        if hasattr(self._result, "diagnostics") and hasattr(self._result.diagnostics, "info"):
+            diagnostics_fields = self._result.diagnostics.info.get("fields")
+        if isinstance(diagnostics_fields, dict):
+            for name, values in diagnostics_fields.items():
+                fields.setdefault(name, values)
+
+        for name, values in fields.items():
+            try:
+                self.register_scalar_field(name, values, overwrite=False)
+            except ValueError:
+                # Ignore invalid user fields at plotter construction time.
+                continue
+
+    def register_scalar_field(
+        self,
+        name: str,
+        nodal_values,
+        *,
+        label: Optional[str] = None,
+        overwrite: bool = True,
+    ) -> str:
+        """
+        Register a user-defined scalar nodal field for later plotting.
+
+        Parameters
+        ----------
+        name:
+            Field identifier. Normalization ignores case, underscores and common LaTeX
+            wrappers (e.g. ``"$\\sigma_{E_{22}}$"``).
+        nodal_values:
+            1D nodal scalar values with shape ``(Nn,)``.
+        label:
+            Optional display label used for colorbar and title (defaults to `name`).
+        overwrite:
+            If True, overwrite an existing user field with the same normalized key.
+
+        Returns
+        -------
+        str
+            Normalized field key used internally.
+        """
+        key = self._normalize_field_key(name)
+        values = np.asarray(nodal_values)
+        expected = int(self._result.u_nodal.shape[0])
+        if values.ndim != 1 or values.shape[0] != expected:
+            raise ValueError(f"User field '{name}' must have shape ({expected},).")
+        if not overwrite and key in self._user_scalar_fields:
+            return key
+        self._user_scalar_fields[key] = values
+        self._user_scalar_names[key] = str(name)
+        self._user_scalar_labels[key] = str(name) if label is None else str(label)
+        return key
 
     def _validate_inputs(self) -> None:
         if self._def_image.ndim != 2:
@@ -212,7 +283,7 @@ class DICPlotter:
 
     @staticmethod
     def _normalize_field_name(field: str) -> PlotField:
-        key = field.strip().lower().replace("_", "")
+        key = DICPlotter._normalize_field_key(field)
         aliases = {
             "u1": PlotField("u1", "$U_1$"),
             "ux": PlotField("u1", "$U_1$"),
@@ -231,9 +302,7 @@ class DICPlotter:
             "discrep": PlotField("discrepancy", "Discrepancy"),
             "dyscepancy": PlotField("discrepancy", "Discrepancy"),
         }
-        if key not in aliases:
-            raise ValueError(f"Unsupported field '{field}'.")
-        return aliases[key]
+        return aliases.get(key, PlotField(key, field))
 
     def _scatter_pixel_values(self, pixel_values: np.ndarray, valid_mask: Optional[np.ndarray] = None) -> np.ndarray:
         return self._scatter_pixel_values_with(
@@ -332,6 +401,14 @@ class DICPlotter:
         if key not in self._scalar_field_cache:
             self._scalar_field_cache[key] = self._interpolate_scalar_field(self._strain_fields[key])
         return self._scalar_field_cache[key]
+
+    def _get_user_field_map(self, key: str) -> np.ndarray:
+        if key not in self._user_scalar_fields:
+            raise ValueError(f"User field '{key}' is not available.")
+        cache_key = f"user:{key}"
+        if cache_key not in self._scalar_field_cache:
+            self._scalar_field_cache[cache_key] = self._interpolate_scalar_field(self._user_scalar_fields[key])
+        return self._scalar_field_cache[cache_key]
 
     @staticmethod
     def _bilinear_sample(image: np.ndarray, coords: np.ndarray) -> np.ndarray:
@@ -481,7 +558,8 @@ class DICPlotter:
         """
         Plot a scalar field over the deformed image.
 
-        Supported fields: U1/U2/E11/E22/E12/discrepancy.
+        Supported fields: U1/U2/E11/E22/E12/discrepancy and user-defined fields
+        registered via `register_scalar_field(...)` or provided in `DICResult.fields`.
         """
         selected = self._normalize_field_name(field)
         self._init_figure_template(figsize, cmap, image_alpha, plotmesh)
@@ -495,8 +573,18 @@ class DICPlotter:
             field_map = self._get_strain_map(selected.key)
         elif selected.key == "discrepancy":
             field_map = self._discrepancy_map()
+        elif selected.key in self._user_scalar_fields:
+            field_map = self._get_user_field_map(selected.key)
+            stored_label = self._user_scalar_labels.get(selected.key, selected.label)
+            stored_name = self._user_scalar_names.get(selected.key)
+            label = stored_label
+            if stored_name is not None and stored_label == stored_name and selected.label != stored_name:
+                label = selected.label
+            selected = PlotField(selected.key, label)
         else:
-            raise ValueError(f"Unsupported field '{field}'.")
+            user_fields = ", ".join(sorted(self._user_scalar_labels.values()))
+            hint = "" if not user_fields else f" Available user fields: {user_fields}."
+            raise ValueError(f"Unsupported field '{field}'.{hint}")
 
         masked = np.ma.array(field_map, mask=~np.isfinite(field_map))
         self._overlay_im.set_data(masked)
