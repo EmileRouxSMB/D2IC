@@ -9,12 +9,15 @@ import jax.numpy as jnp
 
 class ConstantVelocityPropagator(DisplacementPropagatorBase):
     """
-    Warm-start strategy assuming constant velocity:
-        u_k \u2248 u_{k-1} + (u_{k-1} - u_{k-2}) = 2*u_prev - u_prevprev
+    Warm-start strategy assuming constant velocity between frames.
 
-    Fallback:
-      - if u_prev is None: return None
-      - if u_prevprev is None: return u_prev
+    Uses a simple extrapolation:
+    ``u_k ≈ u_{k-1} + (u_{k-1} - u_{k-2}) = 2*u_prev - u_prevprev``.
+
+    Fallback behavior
+    -----------------
+    - if ``u_prev`` is None: return None
+    - if ``u_prevprev`` is None: return ``u_prev``
     """
 
     def propagate(

@@ -7,7 +7,9 @@ from .propagator_base import DisplacementPropagatorBase
 
 class PreviousDisplacementPropagator(DisplacementPropagatorBase):
     """
-    Warm-start strategy: u_warm = u_prev.
+    Warm-start strategy: reuse the previous displacement field.
+
+    Implements ``u_warm = u_prev``.
     """
 
     def propagate(

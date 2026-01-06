@@ -25,6 +25,33 @@ def build_pixel_assets(
     bbox_pad: float = 2.0,
     chunk_size: int = 4096,
 ) -> PixelAssets:
+    """
+    Build pixel-level assets required by mesh-based image solvers.
+
+    This routine:
+    - samples candidate pixels in the mesh bounding box,
+    - assigns each pixel to a containing element (if any),
+    - computes bilinear shape functions at each retained pixel,
+    - builds node-wise gather tables for fast residual/regularization assembly.
+
+    Parameters
+    ----------
+    mesh:
+        Mesh definition (2D quads expected).
+    ref_image:
+        Reference image used for sizing the ROI sampling domain.
+    binning:
+        Image downsampling factor used by the solver; mesh coordinates are scaled by ``1/binning``.
+    bbox_pad:
+        Padding (in pixel units, in the binned coordinate system) added around the mesh bounding box.
+    chunk_size:
+        Chunk size used by some geometry kernels to control memory.
+
+    Returns
+    -------
+    PixelAssets
+        Pixel-level lookup and interpolation tables.
+    """
     nodes = np.asarray(mesh.nodes_xy) / float(binning)
     elements = np.asarray(mesh.elements, dtype=int)
     H, W = ref_image.shape[:2]
@@ -71,6 +98,12 @@ def build_pixel_assets(
 
 
 def _sample_pixels_in_bbox(nodes: np.ndarray, H: int, W: int, pad: float) -> np.ndarray:
+    """
+    Sample pixel centers within the axis-aligned bounding box of the mesh.
+
+    Returns pixel coordinates in ``(x, y)`` order, where ``x`` maps to columns and
+    ``y`` maps to rows. Pixel centers are placed at ``(j + 0.5, i + 0.5)``.
+    """
     x_min = float(nodes[:, 0].min())
     x_max = float(nodes[:, 0].max())
     y_min = float(nodes[:, 1].min())
@@ -90,6 +123,27 @@ def build_pixel_to_element_mapping_numpy(
     elements,
     chunk_size: int = 4096,
 ):
+    """
+    Assign pixels to a containing quad element (NumPy implementation).
+
+    Parameters
+    ----------
+    pixel_coords:
+        Pixel center coordinates with shape ``(Np, 2)`` in ``(x, y)`` order.
+    nodes_coord:
+        Node coordinates with shape ``(Nn, 2)`` in the same coordinate system.
+    elements:
+        Element connectivity array with shape ``(Ne, 4)``.
+    chunk_size:
+        Chunk size for the inside-test kernel.
+
+    Returns
+    -------
+    (pixel_elts, pixel_nodes):
+        ``pixel_elts`` is an int array of shape ``(Np,)`` with -1 for pixels outside
+        the mesh. ``pixel_nodes`` is an int array of shape ``(Np, 4)`` giving the
+        element node indices for each pixel (undefined when ``pixel_elts == -1``).
+    """
     Np = pixel_coords.shape[0]
     pixel_elts = -np.ones(Np, dtype=int)
     pixel_nodes = np.zeros((Np, 4), dtype=int)
@@ -141,6 +195,25 @@ def compute_pixel_shape_functions_jax(
     pixel_nodes,
     nodes_coord,
 ):
+    """
+    Compute bilinear quad shape functions at each sampled pixel (JAX).
+
+    Parameters
+    ----------
+    pixel_coords:
+        Pixel coordinates with shape ``(Np, 2)`` in ``(x, y)`` order.
+    pixel_nodes:
+        Node indices per pixel with shape ``(Np, 4)``.
+    nodes_coord:
+        Node coordinates with shape ``(Nn, 2)``.
+
+    Returns
+    -------
+    (pixel_N, xi_eta):
+        ``pixel_N`` has shape ``(Np, 4)`` and contains the shape function values
+        at each pixel. ``xi_eta`` has shape ``(Np, 2)`` and contains the solved
+        local coordinates in the reference element.
+    """
     Xe_all = nodes_coord[pixel_nodes]
     xi_eta_all = vmap(_newton_quadrature)(pixel_coords, Xe_all)
     xi = xi_eta_all[:, 0]
@@ -154,6 +227,11 @@ def compute_pixel_shape_functions_jax(
 
 
 def _newton_quadrature(point, Xe):
+    """
+    Solve for (xi, eta) such that the bilinear mapping of the quad hits `point`.
+
+    Uses a fixed number of Newton iterations.
+    """
     xi = 0.0
     eta = 0.0
     for _ in range(10):
@@ -169,6 +247,7 @@ def _newton_quadrature(point, Xe):
 
 
 def shape_functions_jax(xi, eta):
+    """Bilinear shape functions for a 4-node quad at local coordinates (xi, eta)."""
     return jnp.array(
         [
             0.25 * (1 - xi) * (1 - eta),
@@ -180,6 +259,7 @@ def shape_functions_jax(xi, eta):
 
 
 def shape_function_gradients_jax(xi, eta):
+    """Gradients of bilinear quad shape functions with respect to (xi, eta)."""
     dN_dxi = jnp.array(
         [
             -0.25 * (1 - eta),
@@ -200,6 +280,11 @@ def shape_function_gradients_jax(xi, eta):
 
 
 def build_node_neighbor_dense(elements, nodes_coord, n_nodes):
+    """
+    Build dense node-neighborhood tables from element connectivity.
+
+    This variant also computes a simple inverse-distance weight for each edge.
+    """
     elements_np = np.asarray(elements, dtype=int)
     nodes_coord_np = np.asarray(nodes_coord)
     if elements_np.size == 0:
@@ -286,6 +371,23 @@ def _build_node_neighbor_dense_from_edges_jax(
 
 
 def build_node_pixel_dense(pixel_nodes, pixel_shapeN, n_nodes):
+    """
+    Build dense node->pixel gather tables.
+
+    Parameters
+    ----------
+    pixel_nodes:
+        Node indices per pixel with shape ``(Np, n_local)``.
+    pixel_shapeN:
+        Shape function values per pixel with shape ``(Np, n_local)``.
+    n_nodes:
+        Total number of nodes.
+
+    Returns
+    -------
+    (node_pixel_index, node_N_weight, node_degree):
+        Dense gather indices and weights suitable for JAX kernels.
+    """
     pixel_nodes_np = np.asarray(pixel_nodes, dtype=int)
     n_nodes = int(n_nodes)
     if pixel_nodes_np.size == 0:
@@ -339,6 +441,25 @@ def _build_node_pixel_dense_jax(pixel_nodes, pixel_shapeN, n_nodes, max_deg):
 
 
 def points_in_convex_quad(points, quad_nodes, chunk_size=4096, tol=1e-6):
+    """
+    Test whether points are inside a convex quad (in 2D).
+
+    Parameters
+    ----------
+    points:
+        Array of shape ``(N, 2)`` with ``(x, y)`` coordinates.
+    quad_nodes:
+        Array of shape ``(4, 2)`` with quad node coordinates.
+    chunk_size:
+        Chunk size used for the vectorized JAX kernel.
+    tol:
+        Tolerance applied to the half-plane tests (helps with boundary points).
+
+    Returns
+    -------
+    np.ndarray
+        Boolean array of shape ``(N,)``.
+    """
     pts = np.asarray(points, dtype=np.float32)
     quad = np.asarray(quad_nodes, dtype=np.float32)
     if pts.size == 0:

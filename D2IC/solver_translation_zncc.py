@@ -26,9 +26,12 @@ class TranslationZNCCSolver(SolverBase):
     """
     Translation-only patch matching around each element center using ZNCC.
 
-    Implementation follows the previous ``motion_init.translation_patch_matches_zncc``
-    logic but keeps the heavy lifting in JAX for normalization/scoring while
-    controlling memory via per-center evaluation.
+    The solver evaluates a zero-mean normalized cross-correlation (ZNCC) score
+    between a reference patch and a grid of candidate patches in the deformed
+    image, then returns the argmax translation per element center.
+
+    The heavy lifting runs in JAX for normalization/scoring, while the outer
+    loop stays in Python to control memory and allow per-center boundary checks.
     """
 
     def __init__(self, config: InitMotionConfig, chunk_size: int = 128) -> None:
@@ -40,7 +43,7 @@ class TranslationZNCCSolver(SolverBase):
         self._zncc_argmax = jax.jit(_zncc_argmax)
 
     def compile(self, assets: Any) -> None:
-        # No-op placeholder: shapes determined at runtime, but keep flag for API parity.
+        # Shapes are determined at runtime; keep a compile hook for API parity.
         self._compiled = True
 
     def solve(self, state: Any, def_image: Array) -> TranslationZNCCResult:

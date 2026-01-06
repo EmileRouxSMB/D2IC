@@ -17,6 +17,25 @@ from .mesh_assets import Mesh, MeshAssets, compute_element_centers, make_mesh_as
 
 
 def downsample_mask(mask: np.ndarray, binning: int) -> np.ndarray:
+    """
+    Downsample a boolean mask by integer binning.
+
+    The output mask has shape ``(ceil(H/binning), ceil(W/binning))`` (implemented
+    via padding) and each output pixel is True if any input pixel in the
+    corresponding block is True.
+
+    Parameters
+    ----------
+    mask:
+        Input 2D mask array. Non-zero values are treated as True.
+    binning:
+        Integer downsampling factor. A value <= 1 returns the input mask.
+
+    Returns
+    -------
+    np.ndarray
+        Downsampled boolean mask.
+    """
     mask = np.asarray(mask, dtype=bool)
     if binning <= 1:
         return mask
@@ -40,6 +59,34 @@ def mask_to_mesh(
     remove_islands: bool = True,
     min_island_area_px: int = 64,
 ) -> Mesh:
+    """
+    Convert a binary ROI mask to a simple quadrilateral mesh.
+
+    This is a lightweight meshing routine that places a regular grid over the
+    mask bounding box and keeps cells whose center falls inside the ROI.
+
+    Parameters
+    ----------
+    mask:
+        Binary ROI mask (H, W). Non-zero values are treated as inside the ROI.
+    element_size_px:
+        Approximate element size in pixels.
+    binning:
+        Optional downsampling factor applied to the mask before meshing.
+    origin_xy:
+        Origin offset added to generated node coordinates (in pixel units).
+    enforce_quads:
+        If True, only quadrilateral elements are supported (current implementation).
+    remove_islands:
+        If True, remove small connected components in the mask before meshing.
+    min_island_area_px:
+        Minimum area (in pixels) for a connected component to be kept.
+
+    Returns
+    -------
+    Mesh
+        A quadrilateral mesh in image coordinates.
+    """
     if not enforce_quads:
         raise NotImplementedError("Only quadrilateral meshes are supported at the moment.")
     if element_size_px <= 0:
@@ -89,6 +136,19 @@ def mask_to_mesh(
 
 
 def mask_to_mesh_assets(**kwargs) -> tuple[Mesh, MeshAssets]:
+    """
+    Convenience wrapper returning both `Mesh` and `MeshAssets` from a mask.
+
+    Parameters
+    ----------
+    **kwargs:
+        Forwarded to :func:`mask_to_mesh`.
+
+    Returns
+    -------
+    (mesh, assets):
+        The generated mesh and minimal associated assets (element centers).
+    """
     mesh = mask_to_mesh(**kwargs)
     centers = compute_element_centers(mesh)
     assets = MeshAssets(mesh=mesh, element_centers_xy=centers, pixel_data=None)
@@ -105,11 +165,11 @@ def mask_to_mesh_gmsh(
     min_island_area_px: int = 64,
 ) -> Mesh:
     """
-    Generate a quad mesh with Gmsh from a binary ROI mask.
+    Generate a quadrilateral mesh with Gmsh from a binary ROI mask.
 
-    Parameters mirror ``mask_to_mesh`` but the meshing is performed via the
-    Gmsh Python API followed by ``meshio`` import, enabling more robust
-    boundary handling for complex ROIs.
+    Parameters mirror :func:`mask_to_mesh`, but the meshing is performed via the
+    Gmsh Python API followed by a ``meshio`` import. This provides more robust
+    boundaries for complex ROIs than the grid-based mesher.
     """
     try:
         import gmsh  # type: ignore
@@ -220,6 +280,19 @@ def mask_to_mesh_gmsh(
 
 
 def mask_to_mesh_assets_gmsh(**kwargs) -> tuple[Mesh, MeshAssets]:
+    """
+    Convenience wrapper returning both `Mesh` and `MeshAssets` using Gmsh.
+
+    Parameters
+    ----------
+    **kwargs:
+        Forwarded to :func:`mask_to_mesh_gmsh`.
+
+    Returns
+    -------
+    (mesh, assets):
+        The generated mesh and minimal associated assets (element centers).
+    """
     mesh = mask_to_mesh_gmsh(**kwargs)
     assets = make_mesh_assets(mesh, with_neighbors=True)
     return mesh, assets

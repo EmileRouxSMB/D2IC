@@ -94,7 +94,17 @@ def compute_green_lagrange_strain_nodes_lsq(
 
 def green_lagrange_to_voigt(E_all: Array) -> Array:
     """
-    Convert tensor Green–Lagrange strain (N,2,2) to Voigt vector (N,3).
+    Convert Green–Lagrange strain tensors to Voigt vectors.
+
+    Parameters
+    ----------
+    E_all:
+        Strain tensor array with shape ``(N, 2, 2)``.
+
+    Returns
+    -------
+    Array
+        Voigt strain array with shape ``(N, 3)`` in ``[E11, E22, E12]`` order.
     """
     E = jnp.asarray(E_all)
     sym = 0.5 * (E + jnp.swapaxes(E, 1, 2))
@@ -114,7 +124,12 @@ def small_strain_nodes_lsq(
     eps: float = 1e-8,
 ) -> Array:
     """
-    Least-squares small-strain estimate (symmetric gradient) at each node.
+    Least-squares small-strain estimate at each node.
+
+    This function computes Green–Lagrange strains via
+    :func:`compute_green_lagrange_strain_nodes_lsq` and returns them in Voigt
+    form. For sufficiently small displacement gradients, this matches the
+    infinitesimal strain approximation.
 
     Returns
     -------
@@ -129,5 +144,5 @@ def small_strain_nodes_lsq(
         gauge_length=gauge_length,
         eps=eps,
     )
-    # E_gl already approximates small strain for small gradients; keep TODO for dedicated LSQ if required.
+    # Green–Lagrange strain matches small strain for small displacement gradients.
     return green_lagrange_to_voigt(E_gl)

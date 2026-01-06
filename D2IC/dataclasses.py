@@ -8,7 +8,7 @@ from .types import Array
 @dataclass(frozen=True)
 class InitMotionConfig:
     """
-    Configuration for coarse motion initialization (element-center matching only).
+    Configuration for coarse motion initialization (element-center matching).
     """
     win: int = 41                 # patch size (odd)
     search: int = 24              # translation search radius (pixels)
@@ -20,7 +20,7 @@ class InitMotionConfig:
 @dataclass(frozen=True)
 class MeshDICConfig:
     """
-    Configuration for fine mesh-based DIC.
+    Configuration for mesh-based DIC refinement.
     """
     max_iters: int = 50
     tol: float = 1e-6
@@ -34,6 +34,11 @@ class MeshDICConfig:
 class DICDiagnostics:
     """
     Free-form diagnostics container.
+
+    Notes
+    -----
+    This is intentionally unstructured: solvers and pipelines can attach any
+    metadata needed for downstream inspection (iteration counts, timings, etc.).
     """
     info: Dict[str, Any] = field(default_factory=dict)
 
@@ -42,8 +47,18 @@ class DICDiagnostics:
 class DICResult:
     """
     Standard DIC output.
-    - u_nodal: nodal displacement field (Nn, 2)
-    - strain: placeholder strain output
+
+    Attributes
+    ----------
+    u_nodal:
+        Nodal displacement field with shape ``(Nn, 2)`` in ``(ux, uy)`` order.
+    strain:
+        Nodal strain in Voigt form with shape ``(Nn, 3)`` (typically ``[E11, E22, E12]``).
+        Some pipelines may return zeros if strain post-processing is disabled.
+    diagnostics:
+        Dictionary-like diagnostics payload.
+    history:
+        Optional solver history (implementation-defined).
     """
     u_nodal: Array
     strain: Array
@@ -99,7 +114,7 @@ class BatchDiagnostics:
 @dataclass(frozen=True)
 class BatchResult:
     """
-    Batch output: a list of per-frame DICResult.
+    Batch output: per-frame results plus batch-level diagnostics.
     """
     results: list[DICResult]
     diagnostics: BatchDiagnostics

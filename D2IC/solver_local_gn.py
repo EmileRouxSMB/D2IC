@@ -34,6 +34,11 @@ class LocalGNResult:
 class LocalGaussNewtonSolver(SolverBase):
     """
     Local Gauss-Newton solver for mesh DIC (e.g., nodal local updates).
+
+    Notes
+    -----
+    This solver expects `MeshAssets.pixel_data` to be populated with `PixelAssets`
+    (see :func:`d2ic.pixel_assets.build_pixel_assets`).
     """
 
     def __init__(

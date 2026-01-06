@@ -35,6 +35,11 @@ class GlobalCGResult:
 class GlobalCGSolver(SolverBase):
     """
     Global CG-based solver for mesh DIC.
+
+    Notes
+    -----
+    This solver expects `MeshAssets.pixel_data` to be populated with `PixelAssets`
+    (see :func:`d2ic.pixel_assets.build_pixel_assets`).
     """
 
     def __init__(

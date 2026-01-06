@@ -37,7 +37,15 @@ class MeshDICState:
 
 
 class DICMeshBased(DICBase):
-    """Pure DIC pipeline using the solver stack."""
+    """
+    Mesh-based DIC pipeline.
+
+    This class orchestrates:
+    - asset preparation (neighbors and pixel-level caches),
+    - solver compilation/warmup,
+    - per-frame solving through the injected `SolverBase` implementation,
+    - optional strain post-processing from nodal displacements.
+    """
 
     def __init__(self, mesh: Mesh, solver: SolverBase, config: MeshDICConfig) -> None:
         self.mesh = mesh
