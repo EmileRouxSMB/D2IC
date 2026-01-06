@@ -162,9 +162,9 @@ def run_backend_benchmark(backend: str, base_slug: Optional[str] = None) -> Dict
         raise RuntimeError(f"Unable to initialize JAX backend '{backend}': {err}") from err
     if backend == "gpu" and not any(dev.platform == "gpu" for dev in devices):
         raise RuntimeError("No GPU detected for backend 'gpu'.")
-    from D2IC import generate_roi_mesh
-    from D2IC.dic import Dic
-    from D2IC.dic_plotter import DICPlotter
+    from d2ic import generate_roi_mesh
+    from d2ic.dic import Dic
+    from d2ic.dic_plotter import DICPlotter
 
     base_slug_sanitized = sanitize_label(base_slug or os.environ.get("DIC_BENCH_BASE_SLUG") or get_base_slug())
     cpu_info = collect_cpu_info()
