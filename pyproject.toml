@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "D2IC"
+version = "0.1"
+description = "A differentiable framework for full-field kinematic identification."
+readme = "README.md"
+authors = [{ name = "Emile Roux", email = "emile.roux@univ-smb.fr" }]
+license = { file = "LICENSE" }
+dependencies = [
+  "jax",
+  "opencv-python",
+  "numpy",
+  "scipy",
+  "matplotlib",
+  "scikit-image",
+  "dm_pix",
+  "im-jax",
+  "gmsh",
+  "meshio",
+]
+
+[tool.setuptools.packages.find]
+include = ["d2ic*"]
