@@ -8,6 +8,13 @@ import tempfile
 import numpy as np
 
 try:  # pragma: no cover
+    import gmsh  # type: ignore
+    _GMSH_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    gmsh = None  # type: ignore[assignment]
+    _GMSH_IMPORT_ERROR = exc
+
+try:  # pragma: no cover
     import jax.numpy as jnp
     _ARRAY_LIB = jnp
 except Exception:  # pragma: no cover
@@ -171,11 +178,20 @@ def mask_to_mesh_gmsh(
     Gmsh Python API followed by a ``meshio`` import. This provides more robust
     boundaries for complex ROIs than the grid-based mesher.
     """
+    if gmsh is None or _GMSH_IMPORT_ERROR is not None:
+        raise RuntimeError(
+            "Failed to import `gmsh`; ensure system libraries are present (on Ubuntu: `sudo apt-get install libglu1-mesa`). "
+            "Refer to the README for installation notes."
+        ) from _GMSH_IMPORT_ERROR
+
     try:
-        import gmsh  # type: ignore
         import meshio  # type: ignore
     except ImportError as exc:  # pragma: no cover
-        raise ImportError("mask_to_mesh_gmsh requires gmsh and meshio packages.") from exc
+        raise ImportError(
+            "mask_to_mesh_gmsh requires the optional `meshio` dependency. "
+            "Install with: `pip install \"D2IC[meshing]\"` (or `pip install -e \".[meshing]\"` in a repo checkout). "
+            "Refer to the README for details."
+        ) from exc
 
     mask_bool = np.asarray(mask, dtype=bool)
     if remove_islands:

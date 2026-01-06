@@ -24,7 +24,10 @@ setup(
         "scikit-image",
         "dm_pix",
         "im-jax",
-        "gmsh",
+        "gmsh", 
         "meshio",
     ],
+    extras_require={
+        
+    },
 )

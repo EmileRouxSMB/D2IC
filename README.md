@@ -36,9 +36,16 @@ pip install "jax[cuda12]"
 See the [official docs](https://jax.readthedocs.io/en/latest/installation.html) for other CUDA/cuDNN pairs.
 
 ### System dependencies (meshing)
-ROI generation scripts rely on `meshio`/`gmsh`. On Debian/Ubuntu systems, install the following packages:
+The optional Gmsh-based meshing (`mask_to_mesh_gmsh`, `mask_to_mesh_assets_gmsh`) relies on `gmsh`/`meshio`.
+
+Install the Python deps with:
 ```bash
-sudo apt-get install -y gmsh libglu1 libxcursor-dev libxft2 libxinerama1 libfltk1.3-dev libfreetype6-dev libgl1-mesa-dev
+pip install -e ".[meshing]"
+```
+
+On Debian/Ubuntu systems, the `gmsh` Python wheel also requires `libGLU`:
+```bash
+sudo apt-get install -y libglu1-mesa
 ```
 
 ## Typical workflow
