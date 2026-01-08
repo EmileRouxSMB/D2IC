@@ -164,7 +164,6 @@ def run_backend_benchmark(backend: str, base_slug: Optional[str] = None) -> Dict
     random.seed(RANDOM_SEED)
     np.random.seed(RANDOM_SEED)
     os.environ["JAX_PLATFORM_NAME"] = backend
-    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     import jax
 
     jax.config.update("jax_platform_name", backend)
