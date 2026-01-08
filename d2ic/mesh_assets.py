@@ -39,12 +39,15 @@ class MeshAssets:
         Optional dense node-neighborhood tables for strain post-processing.
     pixel_data:
         Optional pixel-level caches required by some solvers (e.g. CG / local GN).
+    roi_mask:
+        Optional ROI mask aligned with the reference image (after binning).
     """
     mesh: Mesh
     element_centers_xy: Array  # (Ne, 2)
     node_neighbor_index: Optional[Array] = None
     node_neighbor_degree: Optional[Array] = None
     pixel_data: "PixelAssets" | None = None
+    roi_mask: Optional[Array] = None
 
     # Pixel-level lookup (pixel->element, shape functions, etc.) is stored in PixelAssets.
 

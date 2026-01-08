@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence, Optional
+from typing import Sequence, Optional, Iterable
 
 import numpy as np
 
@@ -62,7 +62,7 @@ class BatchMeshBased(BatchBase):
 
         self._state.is_prepared = True
 
-    def sequence(self, images: Sequence[Array]) -> BatchResult:
+    def sequence(self, images: Sequence[Array] | Iterable[Array]) -> BatchResult:
         if not self._state.is_prepared:
             raise RuntimeError("BatchMeshBased.before() must be called before sequence().")
 
@@ -116,20 +116,32 @@ class BatchMeshBased(BatchBase):
 
             pixel_assets = self.assets.pixel_data
             if pixel_assets is None:
+                roi_mask = getattr(self.assets, "roi_mask", None)
+                if roi_mask is not None and roi_mask.shape != self.ref_image.shape:
+                    roi_mask = None
                 pixel_assets = build_pixel_assets(
                     mesh=self.assets.mesh,
                     ref_image=self.ref_image,
                     binning=plot_binning,
+                    roi_mask=roi_mask,
                 )
 
         per_frame: list[DICResult] = []
         u_prev = None
         u_prevprev = None
 
-        n_frames = len(images)
+        n_frames: int | None
+        try:
+            n_frames = len(images)  # type: ignore[arg-type]
+        except TypeError:
+            n_frames = None
+
         for k, Idef in enumerate(images):
             if progress or verbose:
-                print(f"[Batch] Frame {k + 1}/{n_frames}: start")
+                if n_frames is None:
+                    print(f"[Batch] Frame {k + 1}: start")
+                else:
+                    print(f"[Batch] Frame {k + 1}/{n_frames}: start")
             if self.propagator is not None:
                 u_warm = self.propagator.propagate(u_prev=u_prev, u_prevprev=u_prevprev)
                 if verbose:
@@ -175,7 +187,10 @@ class BatchMeshBased(BatchBase):
             u_prevprev = u_prev
             u_prev = np.asarray(res.u_nodal)
             if progress or verbose:
-                print(f"[Batch] Frame {k + 1}/{n_frames}: done")
+                if n_frames is None:
+                    print(f"[Batch] Frame {k + 1}: done")
+                else:
+                    print(f"[Batch] Frame {k + 1}/{n_frames}: done")
 
             if export_png:
                 should_export = export_frames is None or k in export_frames

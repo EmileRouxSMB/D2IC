@@ -75,6 +75,7 @@ class DICMeshBased(DICBase):
                 mesh=assets.mesh,
                 ref_image=ref_image,
                 binning=1.0,
+                roi_mask=getattr(assets, "roi_mask", None),
             )
             assets = replace(assets, pixel_data=pixel_data)
 

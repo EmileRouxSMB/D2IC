@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Tuple, Sequence
 import os
 import tempfile
@@ -142,23 +142,43 @@ def mask_to_mesh(
     return Mesh(nodes_xy=nodes_array, elements=elements_array)
 
 
-def mask_to_mesh_assets(**kwargs) -> tuple[Mesh, MeshAssets]:
+def mask_to_mesh_assets(
+    mask: np.ndarray,
+    element_size_px: float,
+    binning: int = 1,
+    origin_xy: Tuple[float, float] = (0.0, 0.0),
+    enforce_quads: bool = True,
+    remove_islands: bool = True,
+    min_island_area_px: int = 64,
+) -> tuple[Mesh, MeshAssets]:
     """
     Convenience wrapper returning both `Mesh` and `MeshAssets` from a mask.
 
     Parameters
     ----------
-    **kwargs:
-        Forwarded to :func:`mask_to_mesh`.
+    mask, element_size_px, binning, origin_xy, enforce_quads, remove_islands, min_island_area_px:
+        Parameters forwarded to :func:`mask_to_mesh`.
 
     Returns
     -------
     (mesh, assets):
         The generated mesh and minimal associated assets (element centers).
     """
-    mesh = mask_to_mesh(**kwargs)
+    mesh = mask_to_mesh(
+        mask=mask,
+        element_size_px=element_size_px,
+        binning=binning,
+        origin_xy=origin_xy,
+        enforce_quads=enforce_quads,
+        remove_islands=remove_islands,
+        min_island_area_px=min_island_area_px,
+    )
     centers = compute_element_centers(mesh)
-    assets = MeshAssets(mesh=mesh, element_centers_xy=centers, pixel_data=None)
+    mask_bool = np.asarray(mask, dtype=bool)
+    if remove_islands:
+        mask_bool = _remove_small_components(mask_bool, min_island_area_px)
+    mask_ds = downsample_mask(mask_bool, binning)
+    assets = MeshAssets(mesh=mesh, element_centers_xy=centers, pixel_data=None, roi_mask=mask_ds)
     return mesh, assets
 
 
@@ -168,6 +188,8 @@ def mask_to_mesh_gmsh(
     binning: int = 1,
     origin_xy: Tuple[float, float] = (0.0, 0.0),
     contour_step_px: float = 2.0,
+    optimize: bool = True,
+    verbose: bool = False,
     remove_islands: bool = True,
     min_island_area_px: int = 64,
 ) -> Mesh:
@@ -177,6 +199,12 @@ def mask_to_mesh_gmsh(
     Parameters mirror :func:`mask_to_mesh`, but the meshing is performed via the
     Gmsh Python API followed by a ``meshio`` import. This provides more robust
     boundaries for complex ROIs than the grid-based mesher.
+
+    optimize:
+        If True, run ``gmsh.model.mesh.optimize("Netgen")``. This can be slow on
+        complex ROIs; set to False for faster startup.
+    verbose:
+        If True, print timing information for each meshing step.
     """
     if gmsh is None or _GMSH_IMPORT_ERROR is not None:
         raise RuntimeError(
@@ -193,14 +221,23 @@ def mask_to_mesh_gmsh(
             "Refer to the README for details."
         ) from exc
 
+    import time
+
+    t0 = time.perf_counter()
     mask_bool = np.asarray(mask, dtype=bool)
     if remove_islands:
         mask_bool = _remove_small_components(mask_bool, min_island_area_px)
+    if verbose:
+        print(f"[mesh_gmsh] remove_islands: {(time.perf_counter() - t0):.2f}s")
+        t0 = time.perf_counter()
     mask_ds = downsample_mask(mask_bool, binning)
     if not np.any(mask_ds):
         raise ValueError("mask_to_mesh_gmsh: no ROI pixels remain after preprocessing.")
 
     contours = _extract_contours(mask_ds, contour_step_px=contour_step_px, binning=binning)
+    if verbose:
+        print(f"[mesh_gmsh] extract_contours: {(time.perf_counter() - t0):.2f}s (n={len(contours)})")
+        t0 = time.perf_counter()
     if not contours:
         ys, xs = np.nonzero(mask_ds)
         if ys.size == 0:
@@ -256,6 +293,9 @@ def mask_to_mesh_gmsh(
                 major_loop = loop
             else:
                 curve_loops.append(loop)
+        if verbose:
+            print(f"[mesh_gmsh] build_curves: {(time.perf_counter() - t0):.2f}s")
+            t0 = time.perf_counter()
 
         if major_loop is None:
             raise ValueError("mask_to_mesh_gmsh: unable to build outer loop from mask contours.")
@@ -268,11 +308,20 @@ def mask_to_mesh_gmsh(
         gmsh.option.setNumber("Mesh.RecombineAll", 1)
         gmsh.model.mesh.setRecombine(2, surface)
         gmsh.model.mesh.generate(2)
-        gmsh.model.mesh.optimize("Netgen")
+        if verbose:
+            print(f"[mesh_gmsh] mesh_generate: {(time.perf_counter() - t0):.2f}s")
+            t0 = time.perf_counter()
+        if optimize:
+            gmsh.model.mesh.optimize("Netgen")
+            if verbose:
+                print(f"[mesh_gmsh] mesh_optimize: {(time.perf_counter() - t0):.2f}s")
+                t0 = time.perf_counter()
 
         fd, tmp_path = tempfile.mkstemp(suffix=".msh")
         os.close(fd)
         gmsh.write(tmp_path)
+        if verbose:
+            print(f"[mesh_gmsh] mesh_write: {(time.perf_counter() - t0):.2f}s")
     finally:
         gmsh.finalize()
 
@@ -295,22 +344,47 @@ def mask_to_mesh_gmsh(
     return Mesh(nodes_xy=nodes_array, elements=elements_array)
 
 
-def mask_to_mesh_assets_gmsh(**kwargs) -> tuple[Mesh, MeshAssets]:
+def mask_to_mesh_assets_gmsh(
+    mask: np.ndarray,
+    element_size_px: float,
+    binning: int = 1,
+    origin_xy: Tuple[float, float] = (0.0, 0.0),
+    contour_step_px: float = 2.0,
+    optimize: bool = True,
+    verbose: bool = False,
+    remove_islands: bool = True,
+    min_island_area_px: int = 64,
+) -> tuple[Mesh, MeshAssets]:
     """
     Convenience wrapper returning both `Mesh` and `MeshAssets` using Gmsh.
 
     Parameters
     ----------
-    **kwargs:
-        Forwarded to :func:`mask_to_mesh_gmsh`.
+    mask, element_size_px, binning, origin_xy, contour_step_px, optimize, verbose, remove_islands, min_island_area_px:
+        Parameters forwarded to :func:`mask_to_mesh_gmsh`.
 
     Returns
     -------
     (mesh, assets):
         The generated mesh and minimal associated assets (element centers).
     """
-    mesh = mask_to_mesh_gmsh(**kwargs)
+    mesh = mask_to_mesh_gmsh(
+        mask=mask,
+        element_size_px=element_size_px,
+        binning=binning,
+        origin_xy=origin_xy,
+        contour_step_px=contour_step_px,
+        optimize=optimize,
+        verbose=verbose,
+        remove_islands=remove_islands,
+        min_island_area_px=min_island_area_px,
+    )
     assets = make_mesh_assets(mesh, with_neighbors=True)
+    mask_bool = np.asarray(mask, dtype=bool)
+    if remove_islands:
+        mask_bool = _remove_small_components(mask_bool, min_island_area_px)
+    mask_ds = downsample_mask(mask_bool, binning)
+    assets = replace(assets, roi_mask=mask_ds)
     return mesh, assets
 
 

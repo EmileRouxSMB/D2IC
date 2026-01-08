@@ -22,6 +22,7 @@ def build_pixel_assets(
     mesh: Mesh,
     ref_image: Array,
     binning: float,
+    roi_mask: np.ndarray | None = None,
     bbox_pad: float = 2.0,
     chunk_size: int = 4096,
 ) -> PixelAssets:
@@ -42,6 +43,9 @@ def build_pixel_assets(
         Reference image used for sizing the ROI sampling domain.
     binning:
         Image downsampling factor used by the solver; mesh coordinates are scaled by ``1/binning``.
+    roi_mask:
+        Optional boolean mask aligned with the reference image. When provided,
+        pixels outside the mask are discarded before element assignment.
     bbox_pad:
         Padding (in pixel units, in the binned coordinate system) added around the mesh bounding box.
     chunk_size:
@@ -55,7 +59,18 @@ def build_pixel_assets(
     nodes = np.asarray(mesh.nodes_xy) / float(binning)
     elements = np.asarray(mesh.elements, dtype=int)
     H, W = ref_image.shape[:2]
+    if roi_mask is not None:
+        roi_mask = np.asarray(roi_mask, dtype=bool)
+        if roi_mask.shape != (H, W):
+            raise ValueError(
+                f"roi_mask shape {roi_mask.shape} does not match ref_image shape {(H, W)}"
+            )
     pixel_coords = _sample_pixels_in_bbox(nodes, H, W, bbox_pad)
+    if roi_mask is not None and pixel_coords.size > 0:
+        roi_rows = np.clip(np.floor(pixel_coords[:, 1] - 0.5).astype(int), 0, H - 1)
+        roi_cols = np.clip(np.floor(pixel_coords[:, 0] - 0.5).astype(int), 0, W - 1)
+        keep = roi_mask[roi_rows, roi_cols]
+        pixel_coords = pixel_coords[keep]
     pixel_elts, pixel_nodes = build_pixel_to_element_mapping_numpy(
         pixel_coords, nodes, elements, chunk_size=chunk_size
     )
@@ -144,49 +159,82 @@ def build_pixel_to_element_mapping_numpy(
         the mesh. ``pixel_nodes`` is an int array of shape ``(Np, 4)`` giving the
         element node indices for each pixel (undefined when ``pixel_elts == -1``).
     """
-    Np = pixel_coords.shape[0]
-    pixel_elts = -np.ones(Np, dtype=int)
-    pixel_nodes = np.zeros((Np, 4), dtype=int)
-    elements = np.asarray(elements, dtype=int)
+    pixel_coords = np.asarray(pixel_coords, dtype=float)
     nodes_coord = np.asarray(nodes_coord, dtype=float)
-    if elements.size == 0 or Np == 0:
-        return pixel_elts, pixel_nodes
+    elements = np.asarray(elements, dtype=np.int32)
+    elements_jnp = jnp.asarray(elements)
 
-    elt_bboxes = []
-    for e in elements:
-        Xe = nodes_coord[e]
-        xmin, ymin = Xe.min(axis=0)
-        xmax, ymax = Xe.max(axis=0)
-        elt_bboxes.append([xmin, xmax, ymin, ymax])
-    elt_bboxes = np.asarray(elt_bboxes)
+    Np = int(pixel_coords.shape[0])
+    Ne = int(elements.shape[0])
+    if Np == 0 or Ne == 0:
+        return -np.ones((Np,), dtype=int), np.zeros((Np, 4), dtype=int)
 
-    for e, bbox in enumerate(elt_bboxes):
-        remaining = pixel_elts < 0
-        if not np.any(remaining):
-            break
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be >= 1")
+
+    quad_nodes = jnp.asarray(nodes_coord[elements])
+    edges = jnp.roll(quad_nodes, -1, axis=1) - quad_nodes  # (Ne, 4, 2)
+    bbox_min = quad_nodes.min(axis=1)  # (Ne, 2)
+    bbox_max = quad_nodes.max(axis=1)  # (Ne, 2)
+
+    quad_next = jnp.roll(quad_nodes, -1, axis=1)
+    area2 = jnp.sum(
+        quad_nodes[:, :, 0] * quad_next[:, :, 1] - quad_nodes[:, :, 1] * quad_next[:, :, 0],
+        axis=1,
+    )
+    orientation = jnp.where(area2 >= 0.0, 1.0, -1.0)  # (Ne,)
+
+    tol = 1e-6
+
+    @jax.jit
+    def _assign_chunk(pix_chunk, active_mask):
+        x = pix_chunk[:, 0][:, None]
+        y = pix_chunk[:, 1][:, None]
         mask_bbox = (
-            remaining
-            & (pixel_coords[:, 0] >= bbox[0])
-            & (pixel_coords[:, 0] <= bbox[1])
-            & (pixel_coords[:, 1] >= bbox[2])
-            & (pixel_coords[:, 1] <= bbox[3])
+            (x >= bbox_min[:, 0])
+            & (x <= bbox_max[:, 0])
+            & (y >= bbox_min[:, 1])
+            & (y <= bbox_max[:, 1])
+        )  # (chunk_size, Ne)
+
+        vec = pix_chunk[:, None, None, :] - quad_nodes[None, :, :, :]  # (chunk_size, Ne, 4, 2)
+        cross = edges[None, :, :, 0] * vec[:, :, :, 1] - edges[None, :, :, 1] * vec[:, :, :, 0]
+        inside = jnp.all(orientation[None, :, None] * cross >= -tol, axis=-1)  # (chunk_size, Ne)
+
+        valid = mask_bbox & inside
+        valid_any = jnp.any(valid, axis=1)
+        first_idx = jnp.argmax(valid.astype(jnp.int32), axis=1)
+        elt_idx = jnp.where(valid_any, first_idx, -1)
+        safe_idx = jnp.where(elt_idx < 0, 0, elt_idx)
+        pix_nodes = jnp.where(
+            valid_any[:, None],
+            elements_jnp[safe_idx],
+            jnp.zeros((pix_chunk.shape[0], 4), dtype=jnp.int32),
         )
-        if not np.any(mask_bbox):
-            continue
-        idx_candidates = np.nonzero(mask_bbox)[0]
-        pts = pixel_coords[idx_candidates]
-        quad_nodes = nodes_coord[elements[e]]
-        inside = points_in_convex_quad(
-            pts,
-            quad_nodes,
-            chunk_size=chunk_size,
-        )
-        if not np.any(inside):
-            continue
-        idx_inside = idx_candidates[inside]
-        pixel_elts[idx_inside] = e
-        pixel_nodes[idx_inside] = elements[e]
-    return pixel_elts, pixel_nodes
+
+        elt_idx = jnp.where(active_mask, elt_idx, -1)
+        pix_nodes = jnp.where(active_mask[:, None], pix_nodes, 0)
+        return elt_idx, pix_nodes
+
+    pixel_elts = []
+    pixel_nodes = []
+    for start in range(0, Np, chunk_size):
+        end = min(start + chunk_size, Np)
+        cur = end - start
+        chunk = pixel_coords[start:end]
+        if cur < chunk_size:
+            pad = np.zeros((chunk_size - cur, 2), dtype=chunk.dtype)
+            chunk = np.vstack([chunk, pad])
+            active = np.zeros((chunk_size,), dtype=bool)
+            active[:cur] = True
+        else:
+            active = np.ones((chunk_size,), dtype=bool)
+
+        elts_chunk, nodes_chunk = _assign_chunk(jnp.asarray(chunk), jnp.asarray(active))
+        pixel_elts.append(np.asarray(elts_chunk)[:cur])
+        pixel_nodes.append(np.asarray(nodes_chunk)[:cur])
+
+    return np.concatenate(pixel_elts, axis=0), np.vstack(pixel_nodes)
 
 
 @jax.jit
@@ -285,16 +333,18 @@ def build_node_neighbor_dense(elements, nodes_coord, n_nodes):
 
     This variant also computes a simple inverse-distance weight for each edge.
     """
-    elements_np = np.asarray(elements, dtype=int)
+    elements_np = np.asarray(elements, dtype=np.int64)
     nodes_coord_np = np.asarray(nodes_coord)
-    if elements_np.size == 0:
+    n_nodes = int(n_nodes)
+
+    if elements_np.size == 0 or n_nodes == 0:
         zero_idx = jnp.full((n_nodes, 0), -1, dtype=jnp.int32)
         zero_deg = jnp.zeros((n_nodes,), dtype=jnp.int32)
         zero_w = jnp.zeros((n_nodes, 0), dtype=nodes_coord_np.dtype)
         return zero_idx, zero_deg, zero_w
 
-    n_local = elements_np.shape[1]
-    idx = np.arange(n_local, dtype=int)
+    n_local = int(elements_np.shape[1])
+    idx = np.arange(n_local, dtype=np.int64)
     src_idx = np.repeat(idx, n_local)
     dst_idx = np.tile(idx, n_local)
     mask = src_idx != dst_idx
@@ -303,23 +353,59 @@ def build_node_neighbor_dense(elements, nodes_coord, n_nodes):
     src_flat = elements_np[:, src_idx].reshape(-1)
     dst_flat = elements_np[:, dst_idx].reshape(-1)
 
-    adj = np.zeros((n_nodes, n_nodes), dtype=bool)
-    adj[src_flat, dst_flat] = True
-    degrees = adj.sum(axis=1)
-    max_deg = int(degrees.max(initial=0))
-
-    if src_flat.size == 0 or max_deg == 0:
+    if src_flat.size == 0:
         zero_idx = jnp.full((n_nodes, 0), -1, dtype=jnp.int32)
         zero_deg = jnp.zeros((n_nodes,), dtype=jnp.int32)
         zero_w = jnp.zeros((n_nodes, 0), dtype=nodes_coord_np.dtype)
         return zero_idx, zero_deg, zero_w
 
-    return _build_node_neighbor_dense_from_edges_jax(
-        src_flat,
-        dst_flat,
-        nodes_coord_np,
-        n_nodes,
-        max_deg,
+    # Deduplicate edges without building an O(n_nodes^2) adjacency matrix.
+    edges = np.stack([src_flat, dst_flat], axis=1)
+    edges = np.unique(edges, axis=0)
+    if edges.size == 0:
+        zero_idx = jnp.full((n_nodes, 0), -1, dtype=jnp.int32)
+        zero_deg = jnp.zeros((n_nodes,), dtype=jnp.int32)
+        zero_w = jnp.zeros((n_nodes, 0), dtype=nodes_coord_np.dtype)
+        return zero_idx, zero_deg, zero_w
+
+    src = edges[:, 0].astype(np.int64, copy=False)
+    dst = edges[:, 1].astype(np.int64, copy=False)
+    order = np.lexsort((dst, src))
+    src = src[order]
+    dst = dst[order]
+
+    degrees = np.bincount(src, minlength=n_nodes).astype(np.int32, copy=False)
+    max_deg = int(degrees.max(initial=0))
+    if max_deg == 0:
+        zero_idx = jnp.full((n_nodes, 0), -1, dtype=jnp.int32)
+        zero_deg = jnp.zeros((n_nodes,), dtype=jnp.int32)
+        zero_w = jnp.zeros((n_nodes, 0), dtype=nodes_coord_np.dtype)
+        return zero_idx, zero_deg, zero_w
+
+    xi = nodes_coord_np[src, :2]
+    xj = nodes_coord_np[dst, :2]
+    dist = np.linalg.norm(xj - xi, axis=1)
+    weight_vals = (1.0 / (dist + 1e-6)).astype(nodes_coord_np.dtype, copy=False)
+
+    # Vectorized "slot within each src group" for scatter-fill:
+    # slot[k] = k - first_index_of_src_group(k)
+    m = int(src.shape[0])
+    change = np.empty((m,), dtype=bool)
+    change[0] = True
+    change[1:] = src[1:] != src[:-1]
+    group_start = np.where(change, np.arange(m), 0)
+    group_start = np.maximum.accumulate(group_start)
+    slot = np.arange(m) - group_start
+
+    node_neighbor_index = -np.ones((n_nodes, max_deg), dtype=np.int32)
+    node_neighbor_weight = np.zeros((n_nodes, max_deg), dtype=nodes_coord_np.dtype)
+    node_neighbor_index[src.astype(np.intp), slot.astype(np.intp)] = dst.astype(np.int32, copy=False)
+    node_neighbor_weight[src.astype(np.intp), slot.astype(np.intp)] = weight_vals
+
+    return (
+        jnp.asarray(node_neighbor_index),
+        jnp.asarray(degrees),
+        jnp.asarray(node_neighbor_weight),
     )
 
 

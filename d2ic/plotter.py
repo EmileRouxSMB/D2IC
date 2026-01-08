@@ -9,6 +9,7 @@ import numpy as np
 import re
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
+from matplotlib.colorbar import Colorbar
 from matplotlib.figure import Figure
 from matplotlib.collections import PolyCollection
 
@@ -512,7 +513,9 @@ class DICPlotter:
         plotmesh: bool,
     ) -> None:
         if self._fig is not None:
-            return
+            self._activate_figure()
+            if self._fig is not None:
+                return
         fig, ax = plt.subplots(figsize=figsize)
         ax.imshow(self._def_image, cmap="gray", origin="lower", alpha=1.0)
         placeholder = np.zeros_like(self._def_image, dtype=float)
@@ -535,6 +538,19 @@ class DICPlotter:
         self._colorbar = colorbar
         self._mesh_collection = mesh_collection
 
+    def _activate_figure(self) -> None:
+        if self._fig is None or self._ax is None:
+            return
+        if self._fig.number not in plt.get_fignums():
+            self._fig = None
+            self._ax = None
+            self._overlay_im = None
+            self._colorbar = None
+            self._mesh_collection = None
+            return
+        plt.figure(self._fig.number)
+        plt.sca(self._ax)
+
     def _set_mesh_visibility(self, plotmesh: bool) -> None:
         if plotmesh:
             if self._mesh_collection is None:
@@ -547,23 +563,8 @@ class DICPlotter:
             if self._mesh_collection is not None:
                 self._mesh_collection.set_visible(False)
 
-    def plot(
-        self,
-        field: str,
-        image_alpha: float = 0.75,
-        cmap: str = "jet",
-        figsize: Tuple[float, float] = (6.0, 6.0),
-        plotmesh: bool = True,
-    ) -> Tuple[Figure, Axes]:
-        """
-        Plot a scalar field over the deformed image.
-
-        Supported fields: U1/U2/E11/E22/E12/discrepancy and user-defined fields
-        registered via `register_scalar_field(...)` or provided in `DICResult.fields`.
-        """
+    def _resolve_field_map(self, field: str) -> tuple[PlotField, np.ndarray]:
         selected = self._normalize_field_name(field)
-        self._init_figure_template(figsize, cmap, image_alpha, plotmesh)
-        self._set_mesh_visibility(plotmesh)
 
         if selected.key == "u1":
             field_map = self._ux_map
@@ -585,6 +586,77 @@ class DICPlotter:
             user_fields = ", ".join(sorted(self._user_scalar_labels.values()))
             hint = "" if not user_fields else f" Available user fields: {user_fields}."
             raise ValueError(f"Unsupported field '{field}'.{hint}")
+
+        return selected, field_map
+
+    def plot_into(
+        self,
+        ax: Axes,
+        field: str,
+        image_alpha: float = 0.75,
+        cmap: str = "jet",
+        plotmesh: bool = True,
+        add_colorbar: bool = True,
+    ) -> tuple[Axes, Optional[Colorbar]]:
+        """
+        Plot a scalar field into an existing Matplotlib axis.
+
+        This helper enables layouts such as subplots. Unlike `plot(...)`, it does
+        not reuse or mutate the internal figure state stored on the plotter.
+        """
+        selected, field_map = self._resolve_field_map(field)
+
+        ax.imshow(self._def_image, cmap="gray", origin="lower", alpha=1.0)
+        placeholder = np.zeros_like(self._def_image, dtype=float)
+        overlay = ax.imshow(
+            placeholder,
+            cmap=cmap,
+            origin="lower",
+            alpha=image_alpha,
+        )
+        colorbar = None
+        if add_colorbar:
+            colorbar = ax.figure.colorbar(overlay, ax=ax, label="")
+        if plotmesh:
+            mesh_collection = self._quad_mesh_collection()
+            if mesh_collection is not None:
+                ax.add_collection(mesh_collection)
+
+        masked = np.ma.array(field_map, mask=~np.isfinite(field_map))
+        overlay.set_data(masked)
+        overlay.set_alpha(image_alpha)
+        overlay.set_cmap(cmap)
+        if masked.count() > 0:
+            vmin = masked.min()
+            vmax = masked.max()
+            if vmin != vmax:
+                overlay.set_clim(vmin=float(vmin), vmax=float(vmax))
+        if colorbar is not None:
+            colorbar.set_label(selected.label)
+            colorbar.update_normal(overlay)
+        ax.set_title(selected.label)
+        ax.set_aspect("equal")
+        return ax, colorbar
+
+    def plot(
+        self,
+        field: str,
+        image_alpha: float = 0.75,
+        cmap: str = "jet",
+        figsize: Tuple[float, float] = (6.0, 6.0),
+        plotmesh: bool = True,
+    ) -> Tuple[Figure, Axes]:
+        """
+        Plot a scalar field over the deformed image.
+
+        Supported fields: U1/U2/E11/E22/E12/discrepancy and user-defined fields
+        registered via `register_scalar_field(...)` or provided in `DICResult.fields`.
+        """
+        self._init_figure_template(figsize, cmap, image_alpha, plotmesh)
+        self._activate_figure()
+        self._set_mesh_visibility(plotmesh)
+
+        selected, field_map = self._resolve_field_map(field)
 
         masked = np.ma.array(field_map, mask=~np.isfinite(field_map))
         self._overlay_im.set_data(masked)
