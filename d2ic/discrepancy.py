@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Tuple
 
 import numpy as np
+import jax.numpy as jnp
 
 from .types import Array
 from .mesh_assets import PixelAssets
@@ -47,6 +48,41 @@ def bilinear_sample_numpy(image: np.ndarray, coords: np.ndarray) -> np.ndarray:
     return values
 
 
+def bilinear_sample_jax(image: Array, coords: Array) -> Array:
+    image = jnp.asarray(image)
+    coords = jnp.asarray(coords)
+    x = coords[:, 0]
+    y = coords[:, 1]
+
+    x_cont = x - 0.5
+    y_cont = y - 0.5
+    j0 = jnp.floor(x_cont).astype(jnp.int32)
+    i0 = jnp.floor(y_cont).astype(jnp.int32)
+    fx = x_cont - j0.astype(image.dtype)
+    fy = y_cont - i0.astype(image.dtype)
+
+    H, W = image.shape
+    valid = (i0 >= 0) & (i0 < H - 1) & (j0 >= 0) & (j0 < W - 1)
+
+    i0v = jnp.clip(i0, 0, H - 2)
+    j0v = jnp.clip(j0, 0, W - 2)
+    i1v = i0v + 1
+    j1v = j0v + 1
+
+    v00 = image[i0v, j0v]
+    v01 = image[i0v, j1v]
+    v10 = image[i1v, j0v]
+    v11 = image[i1v, j1v]
+    values = (
+        v00 * (1.0 - fx) * (1.0 - fy)
+        + v01 * fx * (1.0 - fy)
+        + v10 * (1.0 - fx) * fy
+        + v11 * fx * fy
+    )
+    values = jnp.where(valid, values, jnp.nan)
+    return values
+
+
 def compute_discrepancy_map_ref(
     *,
     ref_image: Array,
@@ -59,42 +95,33 @@ def compute_discrepancy_map_ref(
 
     Returns `(map_ref, rms)` where `map_ref` has shape `(H, W)` and is NaN outside the ROI.
     """
-    ref = np.asarray(ref_image)
-    deformed = np.asarray(def_image)
+    ref = jnp.asarray(ref_image)
+    deformed = jnp.asarray(def_image)
     if ref.ndim != 2 or deformed.ndim != 2:
         raise ValueError("ref_image and def_image must be 2D arrays.")
 
-    pixel_coords_ref = np.asarray(pixel_assets.pixel_coords_ref)
-    pixel_nodes = np.asarray(pixel_assets.pixel_nodes, dtype=int)
-    pixel_shapeN = np.asarray(pixel_assets.pixel_shapeN)
-    roi_flat = np.asarray(pixel_assets.roi_mask_flat, dtype=np.int64)
+    pixel_coords_ref = jnp.asarray(pixel_assets.pixel_coords_ref)
+    pixel_nodes = jnp.asarray(pixel_assets.pixel_nodes, dtype=jnp.int32)
+    pixel_shapeN = jnp.asarray(pixel_assets.pixel_shapeN)
+    roi_flat = jnp.asarray(pixel_assets.roi_mask_flat, dtype=jnp.int32)
     H, W = pixel_assets.image_shape
 
-    u = np.asarray(u_nodal)
+    u = jnp.asarray(u_nodal)
     node_values = u[pixel_nodes]
     pixel_disp = np.sum(pixel_shapeN[..., None] * node_values, axis=1)
     pixel_coords_def = pixel_coords_ref + pixel_disp
 
-    i_ref = bilinear_sample_numpy(ref, pixel_coords_ref)
-    i_def = bilinear_sample_numpy(deformed, pixel_coords_def)
+    i_ref = bilinear_sample_jax(ref, pixel_coords_ref)
+    i_def = bilinear_sample_jax(deformed, pixel_coords_def)
     residuals = i_def - i_ref
 
-    valid = np.isfinite(residuals)
-    rms = float(np.sqrt(np.mean((residuals[valid]) ** 2))) if np.any(valid) else float("nan")
+    valid = jnp.isfinite(residuals)
+    valid_f = valid.astype(residuals.dtype)
+    denom = jnp.maximum(jnp.sum(valid_f), jnp.asarray(1.0, dtype=residuals.dtype))
+    rms = jnp.sqrt(jnp.sum((residuals * valid_f) ** 2) / denom)
 
-    flat = np.full(H * W, np.nan, dtype=float)
-    if roi_flat.size == 0:
-        return flat.reshape(H, W), rms
-
-    idx = roi_flat[valid]
-    if idx.size == 0:
-        return flat.reshape(H, W), rms
-
-    vals = residuals[valid].astype(float, copy=False)
-    accum = np.bincount(idx, weights=vals, minlength=H * W)
-    counts = np.bincount(idx, minlength=H * W)
-    out = accum / np.maximum(counts, 1)
-    mask = counts == 0
-    out = out.astype(float, copy=False)
-    out[mask] = np.nan
-    return out.reshape(H, W), rms
+    accum = jnp.bincount(roi_flat, weights=residuals * valid_f, minlength=H * W)
+    counts = jnp.bincount(roi_flat, weights=valid_f, minlength=H * W)
+    out = accum / jnp.maximum(counts, 1.0)
+    out = jnp.where(counts > 0, out, jnp.nan)
+    return out.reshape(H, W), float(rms)
