@@ -1,0 +1,16 @@
+{
+  "backend": "cpu",
+  "status": "ok",
+  "frames": 11,
+  "cpu": {
+    "model": "x86_64",
+    "cores": 10,
+    "os": "Linux 6.6.87.2-microsoft-standard-WSL2"
+  },
+  "gpu": null,
+  "indicators": {
+    "prep_s": 2.9351599519999354,
+    "per_frame_s": 0.8456217211818078,
+    "total_s": 12.237021785000024
+  }
+}

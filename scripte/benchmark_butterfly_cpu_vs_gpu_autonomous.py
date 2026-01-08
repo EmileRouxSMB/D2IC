@@ -100,6 +100,7 @@ def run_backend_benchmark(backend: str) -> Dict[str, Any]:
     os.environ["JAX_PLATFORM_NAME"] = backend
 
     import jax
+    import jax.numpy as jnp
 
     jax.config.update("jax_platform_name", backend)
     try:
@@ -198,6 +199,7 @@ def run_backend_benchmark(backend: str) -> Dict[str, Any]:
     dic.prepare(im_ref, assets)
     if dic_local is not None:
         dic_local.prepare(im_ref, assets)
+    jax.block_until_ready(jnp.asarray(im_ref))
 
     prep_time = time.perf_counter() - prep_start
 
@@ -208,13 +210,16 @@ def run_backend_benchmark(backend: str) -> Dict[str, Any]:
         frame_start = time.perf_counter()
         u_warm = propagator.propagate(u_prev=u_prev, u_prevprev=u_prevprev) if propagator else None
         if u_warm is not None:
-            dic.set_initial_guess(u_warm)
+            # Copy to avoid donated buffers invalidating warm-start history.
+            dic.set_initial_guess(jnp.copy(jnp.asarray(u_warm)))
         res = dic.run(im_def)
         if dic_local is not None:
-            dic_local.set_initial_guess(res.u_nodal)
+            # Copy to keep CG output valid after donated local solve.
+            dic_local.set_initial_guess(jnp.copy(jnp.asarray(res.u_nodal)))
             res = dic_local.run(im_def)
+        res.u_nodal.block_until_ready()
         u_prevprev = u_prev
-        u_prev = np.asarray(res.u_nodal)
+        u_prev = res.u_nodal
         per_frame_times.append(time.perf_counter() - frame_start)
 
     total_time = time.perf_counter() - prep_start
