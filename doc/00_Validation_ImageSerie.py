@@ -10,6 +10,7 @@ displacements against the expected ground truth.
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 from typing import List, Tuple
 
@@ -18,8 +19,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 from skimage.io import imread
 
-from D2IC import generate_roi_mesh
-from D2IC.dic import Dic
+from d2ic import (
+    MeshDICConfig,
+    BatchConfig,
+    DICMeshBased,
+    BatchMeshBased,
+    GlobalCGSolver,
+    mask_to_mesh_assets,
+    mask_to_mesh_assets_gmsh,
+)
+from d2ic.mesh_assets import make_mesh_assets
 
 # Non-interactive backend so the plot is saved even on headless systems.
 matplotlib.use("Agg")
@@ -46,11 +55,12 @@ REF_IMAGE_NAME = "Sample3 Reference.tif"
 MASK_FILENAME = "roi.tif"
 IMAGE_PATTERN = "Sample3-*.tif"
 OUT_DIR = ROOT / "_outputs" / "validation_sample3"
-MESH_ELEMENT_SIZE_PX = 40.0
-DIC_MAX_ITER = 400
-DIC_TOL = 1e-3
-DIC_REG_TYPE = "spring"
-DIC_ALPHA_REG = 1e-4
+MESH_ELEMENT_SIZE_PX = 20.0
+max_iters = 400
+tol = 1e-3
+reg_strength = 1e-1
+USE_GMSH_MESH = False
+INTERPOLATION = "cubic"  # "cubic" (im_jax) or "linear" (dm_pix/bilinear)
 GROUND_TRUTH_DEFAULT_STEP = 0.1  # px per frame if parsing fails
 
 
@@ -66,6 +76,7 @@ def _parse_expected_displacement(path: Path) -> Tuple[float, float]:
 
 def _load_sequence() -> Tuple[np.ndarray, List[np.ndarray], np.ndarray, List[Path]]:
     """Read the reference image, the deformed frames, and their ground truth."""
+    t0 = time.perf_counter()
     if not IMG_DIR.exists():
         raise FileNotFoundError(f"Image directory not found: {IMG_DIR}")
     im_ref = imread(IMG_DIR / REF_IMAGE_NAME).astype(float)
@@ -75,40 +86,90 @@ def _load_sequence() -> Tuple[np.ndarray, List[np.ndarray], np.ndarray, List[Pat
         raise FileNotFoundError(f"No deformed images matching {IMAGE_PATTERN}.")
     images_def = [imread(path).astype(float) for path in deformed_paths]
     expected = np.array([_parse_expected_displacement(p) for p in deformed_paths], dtype=np.float64)
+    t1 = time.perf_counter()
+    print(f"[timing] load_sequence: {(t1 - t0):.2f}s ({len(images_def)} frames)")
     return im_ref, images_def, expected, deformed_paths
+
+
+def _load_mask(path: Path) -> np.ndarray:
+    mask = np.asarray(imread(path))
+    if mask.ndim == 3:
+        if mask.shape[2] == 4:
+            mask = mask[..., :3]
+        mask = mask.mean(axis=2)
+    return mask > 0
 
 
 def _solve_sequence(im_ref: np.ndarray, images_def: List[np.ndarray]) -> np.ndarray:
     """Run DIC sequentially with zero initial guess and no refinements."""
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    mesh_path = OUT_DIR / f"roi_mesh_{int(MESH_ELEMENT_SIZE_PX)}px_validation.msh"
-    mesh_generated = generate_roi_mesh(
-        IMG_DIR / MASK_FILENAME,
-        element_size=MESH_ELEMENT_SIZE_PX,
-        msh_path=str(mesh_path),
-    )
-    mesh_path = Path(mesh_generated)
-    dic = Dic(mesh_path=str(mesh_path))
-    dic.precompute_pixel_data(im_ref)
+    mask_path = IMG_DIR / MASK_FILENAME
+    if not mask_path.exists():
+        raise FileNotFoundError(f"Mask image not found: {mask_path}")
+    t0 = time.perf_counter()
+    mask = _load_mask(mask_path)
+    print(f"[timing] load_mask: {(time.perf_counter() - t0):.2f}s")
 
-    n_nodes = int(dic.node_coordinates.shape[0])
-    disp_history = np.zeros((len(images_def), n_nodes, 2))
-    disp_guess = np.zeros((n_nodes, 2))
-
-    for i, im_def in enumerate(images_def):
-        disp_opt, _ = dic.run_dic(
-            im_ref,
-            im_def,
-            disp_guess=disp_guess,
-            max_iter=DIC_MAX_ITER,
-            tol=DIC_TOL,
-            reg_type=DIC_REG_TYPE,
-            alpha_reg=DIC_ALPHA_REG,
+    t_mesh = time.perf_counter()
+    if USE_GMSH_MESH:
+        print("[timing] mesh_gmsh: start")
+        try:
+            mesh, assets = mask_to_mesh_assets_gmsh(
+                mask=mask,
+                element_size_px=MESH_ELEMENT_SIZE_PX,
+                remove_islands=True,
+                min_island_area_px=64,
+            )
+            print(f"[timing] mesh_gmsh: {(time.perf_counter() - t_mesh):.2f}s")
+        except Exception as exc:
+            print(f"Gmsh meshing failed ({exc}); falling back to structured grid mesher.")
+            mesh, _ = mask_to_mesh_assets(
+                mask=mask,
+                element_size_px=MESH_ELEMENT_SIZE_PX,
+                remove_islands=True,
+                min_island_area_px=64,
+            )
+            assets = make_mesh_assets(mesh, with_neighbors=True)
+            print(f"[timing] mesh_structured: {(time.perf_counter() - t_mesh):.2f}s")
+    else:
+        print("[timing] mesh_structured: start (USE_GMSH_MESH=False)")
+        mesh, _ = mask_to_mesh_assets(
+            mask=mask,
+            element_size_px=MESH_ELEMENT_SIZE_PX,
+            remove_islands=True,
+            min_island_area_px=64,
         )
-        disp_np = np.asarray(disp_opt)
-        disp_history[i] = disp_np
-        disp_guess = disp_np  # propagate to the next frame
+        assets = make_mesh_assets(mesh, with_neighbors=True)
+        print(f"[timing] mesh_structured: {(time.perf_counter() - t_mesh):.2f}s")
 
+    mesh_cfg = MeshDICConfig(
+        max_iters=max_iters,
+        tol=tol,
+        reg_strength=reg_strength,
+    )
+    dic_mesh = DICMeshBased(
+        mesh=mesh,
+        solver=GlobalCGSolver(interpolation=INTERPOLATION),
+        config=mesh_cfg,
+    )
+    batch_cfg = BatchConfig(
+        use_init_motion=False,
+        warm_start_from_previous=True,
+    )
+    batch = BatchMeshBased(
+        ref_image=im_ref,
+        assets=assets,
+        dic_mesh=dic_mesh,
+        batch_config=batch_cfg,
+        propagator=None,
+    )
+    t_batch = time.perf_counter()
+    batch_result = batch.run(images_def)
+    print(f"[timing] batch_run: {(time.perf_counter() - t_batch):.2f}s")
+    per_frame = batch_result.results
+    t_stack = time.perf_counter()
+    disp_history = np.stack([np.asarray(res.u_nodal) for res in per_frame], axis=0)
+    print(f"[timing] stack_results: {(time.perf_counter() - t_stack):.2f}s")
     return disp_history
 
 

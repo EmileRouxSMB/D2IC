@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>D2IC - State Diagram (Execution)</title>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background: linear-gradient(180deg, #f7f3ea 0%, #f0efe8 45%, #f6f2ea 100%);
+      color: #1a1a1a;
+    }
+    h1 { font-size: 24px; margin: 0 0 10px 0; }
+    p { margin: 0 0 18px 0; max-width: 980px; line-height: 1.45; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .panel {
+      background: #fbfaf6;
+      border: 1px solid #e3d9c7;
+      box-shadow: 0 12px 30px rgba(50, 40, 20, 0.08);
+      padding: 18px;
+      border-radius: 10px;
+    }
+    .mermaid { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .error {
+      display: none;
+      margin-top: 14px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid #e3b7b7;
+      background: #fff5f5;
+      color: #5a1111;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      white-space: pre-wrap;
+      line-height: 1.35;
+    }
+    .error.is-visible { display: block; }
+    .muted { opacity: 0.75; }
+  </style>
+</head>
+<body>
+  <h1>D2IC - State diagram (vue exécution)</h1>
+  <p class="muted">
+    Traduction de la logique batch → DIC → solver en <code>stateDiagram-v2</code>,
+    avec étapes clés et branche de warm-start (propagator).
+  </p>
+
+  <div class="panel">
+    <div class="mermaid" id="mermaid-diagram"></div>
+    <textarea id="mermaid-source" style="display:none">
+stateDiagram-v2
+    [*] --> Prepare : BatchMeshBased.run(images)
+
+    Prepare : DICMeshBased.prepare(ref, assets)
+    Prepare : SolverBase.compile(assets)
+    Prepare --> Sequence
+
+    state Sequence {
+        [*] --> WarmStart
+        WarmStart --> Propagate : use propagator / previous
+        Propagate : DisplacementPropagatorBase.propagate()
+        Propagate --> SetGuess : u_warm
+
+        SetGuess : DICMeshBased.set_initial_guess()
+        SetGuess --> Solve
+        Solve : DICMeshBased.run(def_image)
+        Solve : SolverBase.solve(state, def_image)
+        Solve --> UpdateHistory
+        UpdateHistory : u_prevprev <- u_prev
+        UpdateHistory : u_prev <- result.u_nodal
+        UpdateHistory --> WarmStart : next frame
+        UpdateHistory --> [*] : last frame
+    }
+
+    Sequence --> Done
+    Done : BatchResult(results, diagnostics)
+    Done --> [*]
+    </textarea>
+    <div id="mermaid-error" class="error"></div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const errorEl = document.getElementById("mermaid-error");
+      const diagramEl = document.getElementById("mermaid-diagram");
+      const sourceEl = document.getElementById("mermaid-source");
+
+      const showError = (title, details) => {
+        if (!errorEl) return;
+        errorEl.classList.add("is-visible");
+        errorEl.textContent = [title, "", details || "(aucun detail fourni)"].join("\n");
+      };
+
+      if (typeof mermaid === "undefined") {
+        showError(
+          "Mermaid n'a pas pu etre charge.",
+          "La page utilise un CDN; verifie ta connexion reseau / proxy, ou heberge Mermaid en local."
+        );
+        return;
+      }
+
+      mermaid.parseError = (err) => {
+        const detail =
+          typeof err === "string"
+            ? err
+            : (err && (err.str || err.message))
+              ? (err.str || err.message)
+              : JSON.stringify(err, null, 2);
+        showError("Erreur Mermaid (parseError):", detail);
+        console.error("Mermaid parseError:", err);
+      };
+
+      mermaid.initialize({ startOnLoad: false, theme: "neutral", logLevel: "warn" });
+
+      (async () => {
+        try {
+          const text = (sourceEl ? sourceEl.value : "").trim();
+          if (!diagramEl) {
+            showError("Element de rendu introuvable:", "#mermaid-diagram");
+            return;
+          }
+          diagramEl.textContent = text;
+          if (typeof mermaid.parse === "function") {
+            await mermaid.parse(text);
+          } else if (mermaid.mermaidAPI && typeof mermaid.mermaidAPI.parse === "function") {
+            mermaid.mermaidAPI.parse(text);
+          }
+          await mermaid.run({ querySelector: "#mermaid-diagram" });
+        } catch (err) {
+          showError("Erreur Mermaid (exception):", (err && err.message) ? err.message : String(err));
+          console.error("Mermaid exception:", err);
+        }
+      })();
+    });
+  </script>
+</body>
+</html>
