@@ -33,6 +33,7 @@ class MeshDICState:
     """State for pure mesh-based DIC."""
 
     ref_image: Array
+    nodes_xy_device: Array
     assets: MeshAssets
     config: MeshDICConfig
     u0_nodal: Array | None = None
@@ -79,7 +80,15 @@ class DICMeshBased(DICBase):
             )
             assets = replace(assets, pixel_data=pixel_data)
 
-        self._state = MeshDICState(ref_image=ref_image, assets=assets, config=self.config, u0_nodal=None)
+        ref_image_dev = jnp.asarray(ref_image)
+        nodes_xy_dev = jnp.asarray(assets.mesh.nodes_xy)
+        self._state = MeshDICState(
+            ref_image=ref_image_dev,
+            nodes_xy_device=nodes_xy_dev,
+            assets=assets,
+            config=self.config,
+            u0_nodal=None,
+        )
         self.solver.compile(assets)
         if hasattr(self.solver, "warmup"):
             self.solver.warmup(self._state)

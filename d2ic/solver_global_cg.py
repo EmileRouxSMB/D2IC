@@ -121,10 +121,13 @@ class GlobalCGSolver(SolverBase):
         if pix is None:
             raise ValueError("MeshAssets must provide pixel_data for GlobalCGSolver warmup.")
 
-        ref_im = jnp.asarray(state.ref_image)
+        ref_im = state.ref_image
         im1_T = jnp.transpose(ref_im, (1, 0))
         im2_T = im1_T
-        disp0 = jnp.zeros_like(assets.mesh.nodes_xy)
+        nodes_xy_device = getattr(state, "nodes_xy_device", None)
+        if nodes_xy_device is None:
+            nodes_xy_device = jnp.asarray(assets.mesh.nodes_xy)
+        disp0 = jnp.zeros_like(nodes_xy_device)
 
         self._solve_jit.lower(
             disp0,
@@ -151,12 +154,19 @@ class GlobalCGSolver(SolverBase):
 
         assets: MeshAssets = state.assets
         pix: PixelAssets = assets.pixel_data  # type: ignore[assignment]
-        ref_im = jnp.asarray(state.ref_image)
+        ref_im = state.ref_image
         def_im = jnp.asarray(def_image)
         im1_T = jnp.transpose(ref_im, (1, 0))
         im2_T = jnp.transpose(def_im, (1, 0))
 
-        disp0 = jnp.asarray(state.u0_nodal) if state.u0_nodal is not None else jnp.zeros_like(assets.mesh.nodes_xy)
+        nodes_xy_device = getattr(state, "nodes_xy_device", None)
+        if nodes_xy_device is None:
+            nodes_xy_device = jnp.asarray(assets.mesh.nodes_xy)
+        disp0 = (
+            jnp.asarray(state.u0_nodal)
+            if state.u0_nodal is not None
+            else jnp.zeros_like(nodes_xy_device)
+        )
         disp0 = jnp.asarray(disp0)
 
         disp_sol, history, n_iters = self._solve_jit(
