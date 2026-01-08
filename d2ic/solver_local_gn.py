@@ -131,17 +131,24 @@ class LocalGaussNewtonSolver(SolverBase):
         if pix is None:
             raise ValueError("MeshAssets must provide pixel_data for LocalGaussNewtonSolver.")
 
-        ref_im = jnp.asarray(state.ref_image)
+        ref_im = state.ref_image
         def_im = jnp.asarray(def_image)
         im1_T = jnp.transpose(ref_im, (1, 0))
         im2_T = jnp.transpose(def_im, (1, 0))
 
-        disp0 = jnp.asarray(state.u0_nodal) if state.u0_nodal is not None else jnp.zeros_like(assets.mesh.nodes_xy)
+        nodes_xy_device = getattr(state, "nodes_xy_device", None)
+        if nodes_xy_device is None:
+            nodes_xy_device = jnp.asarray(assets.mesh.nodes_xy)
+        disp0 = (
+            jnp.asarray(state.u0_nodal)
+            if state.u0_nodal is not None
+            else jnp.zeros_like(nodes_xy_device)
+        )
         disp0 = jnp.asarray(disp0)
 
-        gx2_np, gy2_np = _compute_image_gradient_np(np.asarray(def_image))
-        gx2_T = jnp.asarray(gx2_np.T, dtype=def_im.dtype)
-        gy2_T = jnp.asarray(gy2_np.T, dtype=def_im.dtype)
+        gx2, gy2 = _compute_image_gradient_jax(def_im)
+        gx2_T = jnp.transpose(gx2, (1, 0))
+        gy2_T = jnp.transpose(gy2, (1, 0))
 
         disp_sol, history = self._solve_jit(
             disp0,
@@ -182,6 +189,16 @@ def _compute_image_gradient_np(im: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     gy = np.zeros_like(im)
     gx[:, 1:-1] = 0.5 * (im[:, 2:] - im[:, :-2])
     gy[1:-1, :] = 0.5 * (im[2:, :] - im[:-2, :])
+    return gx, gy
+
+
+def _compute_image_gradient_jax(im: Array) -> Tuple[Array, Array]:
+    """Central-difference gradient on device (edges set to zero)."""
+    im = jnp.asarray(im)
+    gx = jnp.zeros_like(im)
+    gy = jnp.zeros_like(im)
+    gx = gx.at[:, 1:-1].set(0.5 * (im[:, 2:] - im[:, :-2]))
+    gy = gy.at[1:-1, :].set(0.5 * (im[2:, :] - im[:-2, :]))
     return gx, gy
 
 

@@ -1,0 +1,19 @@
+{
+  "backend": "gpu",
+  "status": "ok",
+  "frames": 11,
+  "cpu": {
+    "model": "x86_64",
+    "cores": 10,
+    "os": "Linux 6.6.87.2-microsoft-standard-WSL2"
+  },
+  "gpu": {
+    "platform": "gpu",
+    "device_name": "NVIDIA RTX 2000 Ada Generation Laptop GPU"
+  },
+  "indicators": {
+    "prep_s": 44.40394640299996,
+    "per_frame_s": 1.8349921903636228,
+    "total_s": 64.58887899699994
+  }
+}

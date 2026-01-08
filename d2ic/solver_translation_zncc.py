@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
-import numpy as np
 import jax
+from jax import lax
 import jax.numpy as jnp
 
 from .solver_base import SolverBase
@@ -51,44 +51,33 @@ class TranslationZNCCSolver(SolverBase):
             raise RuntimeError("TranslationZNCCSolver.compile() must be called before solve().")
 
         assets: MeshAssets = state.assets
-        ref_image = np.asarray(state.ref_image)
-        def_image_np = np.asarray(def_image)
-        centers = np.asarray(assets.element_centers_xy)
+        ref_image = jnp.asarray(state.ref_image)
+        def_image_jnp = jnp.asarray(def_image)
+        centers = jnp.asarray(assets.element_centers_xy)
 
         max_centers = self.config.max_centers
         if max_centers is not None:
             centers = centers[: int(max_centers)]
 
-        n_centers = centers.shape[0]
-        u_centers = np.zeros((n_centers, 2), dtype=np.float32)
-        scores = np.full((n_centers,), np.nan, dtype=np.float32)
-
         win = int(self.config.win)
         search = int(self.config.search)
         score_min = self.config.score_min
 
-        for start in range(0, n_centers, self.chunk_size):
-            end = min(n_centers, start + self.chunk_size)
-            for idx in range(start, end):
-                disp_score = _match_single_center(
-                    centers[idx],
-                    ref_image,
-                    def_image_np,
-                    win=win,
-                    search=search,
-                    zncc_fn=self._zncc_argmax,
-                )
-                if disp_score is None:
-                    continue
-                disp, score = disp_score
-                if score_min is not None and score < float(score_min):
-                    continue
-                u_centers[idx] = disp
-                scores[idx] = score
+        u_centers, scores = _match_centers_jax(
+            centers,
+            ref_image,
+            def_image_jnp,
+            win=win,
+            search=search,
+        )
+        if score_min is not None:
+            valid = scores >= float(score_min)
+            u_centers = jnp.where(valid[:, None], u_centers, jnp.zeros_like(u_centers))
+            scores = jnp.where(valid, scores, jnp.nan)
 
         return TranslationZNCCResult(
-            u_centers=jnp.asarray(u_centers),
-            scores=jnp.asarray(scores),
+            u_centers=u_centers,
+            scores=scores,
         )
 
 
@@ -108,64 +97,71 @@ def _zncc_argmax(template: Array, windows: Array) -> tuple[jnp.ndarray, jnp.ndar
     return best_idx, best_score
 
 
-def _match_single_center(
-    center_xy: np.ndarray,
-    ref_image: np.ndarray,
-    def_image: np.ndarray,
+@jax.jit
+def _extract_windows_jax(patch: Array, win: int, search: int) -> Array:
+    """Return all ``win``-sized windows from ``patch`` as ``(N, win, win)``."""
+    windows_per_axis = 2 * search + 1
+    ys, xs = jnp.meshgrid(
+        jnp.arange(windows_per_axis, dtype=jnp.int32),
+        jnp.arange(windows_per_axis, dtype=jnp.int32),
+        indexing="ij",
+    )
+    offsets = jnp.stack([ys.reshape(-1), xs.reshape(-1)], axis=1)
+
+    def slice_at(offset):
+        return lax.dynamic_slice(patch, (offset[0], offset[1]), (win, win))
+
+    return jax.vmap(slice_at)(offsets)
+
+
+@jax.jit
+def _match_centers_jax(
+    centers: Array,
+    ref_image: Array,
+    def_image: Array,
     *,
     win: int,
     search: int,
-    zncc_fn,
-) -> Optional[tuple[np.ndarray, float]]:
+) -> tuple[Array, Array]:
     r = win // 2
     h_ref, w_ref = ref_image.shape[:2]
     h_def, w_def = def_image.shape[:2]
-
-    x = int(round(float(center_xy[0])))
-    y = int(round(float(center_xy[1])))
-
-    if (
-        y - r < 0
-        or y + r >= h_ref
-        or x - r < 0
-        or x + r >= w_ref
-    ):
-        return None
-
-    template = ref_image[y - r : y + r + 1, x - r : x + r + 1].astype(np.float32, copy=False)
-
-    xs = x - search
-    ys = y - search
-    xe = x + search
-    ye = y + search
-
-    if (
-        ys - r < 0
-        or ye + r >= h_def
-        or xs - r < 0
-        or xe + r >= w_def
-    ):
-        return None
-
-    patch = def_image[ys - r : ye + r + 1, xs - r : xe + r + 1].astype(np.float32, copy=False)
-    windows = _extract_windows(patch, win)
-    if windows.size == 0:
-        return None
-
-    best_idx, best_score = zncc_fn(jnp.asarray(template), jnp.asarray(windows))
-    best_idx_int = int(best_idx)
-    best_score_f = float(best_score)
-
+    patch_size = win + 2 * search
     windows_per_axis = 2 * search + 1
-    ky, kx = divmod(best_idx_int, windows_per_axis)
-    yy = ys + ky
-    xx = xs + kx
-    disp = np.array([xx - x, yy - y], dtype=np.float32)
-    return disp, best_score_f
 
+    def match_one(center_xy):
+        x = jnp.rint(center_xy[0]).astype(jnp.int32)
+        y = jnp.rint(center_xy[1]).astype(jnp.int32)
 
-def _extract_windows(patch: np.ndarray, win: int) -> np.ndarray:
-    """Return all ``win``-sized windows from ``patch`` as ``(N, win, win)``."""
-    view = np.lib.stride_tricks.sliding_window_view(patch, (win, win))
-    windows = view.reshape(-1, win, win)
-    return windows
+        tpl_ok = (y - r >= 0) & (y + r < h_ref) & (x - r >= 0) & (x + r < w_ref)
+        xs = x - search
+        ys = y - search
+        xe = x + search
+        ye = y + search
+        patch_ok = (ys - r >= 0) & (ye + r < h_def) & (xs - r >= 0) & (xe + r < w_def)
+        ok = tpl_ok & patch_ok
+
+        tpl_start = jnp.array([y - r, x - r], dtype=jnp.int32)
+        tpl_start = jnp.clip(tpl_start, jnp.array([0, 0]), jnp.array([h_ref - win, w_ref - win]))
+        patch_start = jnp.array([ys - r, xs - r], dtype=jnp.int32)
+        patch_start = jnp.clip(
+            patch_start,
+            jnp.array([0, 0]),
+            jnp.array([h_def - patch_size, w_def - patch_size]),
+        )
+
+        template = lax.dynamic_slice(ref_image, tpl_start, (win, win))
+        patch = lax.dynamic_slice(def_image, patch_start, (patch_size, patch_size))
+        windows = _extract_windows_jax(patch, win=win, search=search)
+        best_idx, best_score = _zncc_argmax(template, windows)
+
+        ky = best_idx // windows_per_axis
+        kx = best_idx % windows_per_axis
+        yy = ys + ky
+        xx = xs + kx
+        disp = jnp.array([xx - x, yy - y], dtype=jnp.float32)
+        disp = jnp.where(ok, disp, jnp.zeros_like(disp))
+        score = jnp.where(ok, best_score, jnp.nan)
+        return disp, score
+
+    return lax.map(match_one, centers)

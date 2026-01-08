@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Sequence, Optional, Iterable
 
 import numpy as np
+import jax.numpy as jnp
 
 from .batch_base import BatchBase
 from .dic_mesh_based import DICMeshBased
@@ -155,7 +156,8 @@ class BatchMeshBased(BatchBase):
                         print("  init: warm-start from previous frame")
 
             if u_warm is not None:
-                self.dic_mesh.set_initial_guess(u_warm)
+                # Copy to avoid donated buffers invalidating warm-start history.
+                self.dic_mesh.set_initial_guess(jnp.copy(jnp.asarray(u_warm)))
 
             cg_res = self.dic_mesh.run(Idef)
             if verbose:
@@ -163,7 +165,8 @@ class BatchMeshBased(BatchBase):
             res = cg_res
             if self.dic_local is not None:
                 # Local refinement directly chained after CG for each frame.
-                self.dic_local.set_initial_guess(cg_res.u_nodal)
+                # Copy to keep CG output valid after donated local solve.
+                self.dic_local.set_initial_guess(jnp.copy(jnp.asarray(cg_res.u_nodal)))
                 res = self.dic_local.run(Idef)
                 if verbose:
                     _print_history(res.history, label="Local")
@@ -183,9 +186,10 @@ class BatchMeshBased(BatchBase):
                 if verbose:
                     print(f"  save: {out_path}")
 
-            # Update warm-start history for next frame
+            # Update warm-start history for next frame.
+            # Keep JAX arrays on-device; only transfer to host for I/O.
             u_prevprev = u_prev
-            u_prev = np.asarray(res.u_nodal)
+            u_prev = res.u_nodal
             if progress or verbose:
                 if n_frames is None:
                     print(f"[Batch] Frame {k + 1}: done")
