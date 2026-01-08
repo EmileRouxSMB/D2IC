@@ -6,10 +6,12 @@ from __future__ import annotations
 import json
 import os
 import platform
+import random
 import statistics
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -19,14 +21,13 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from skimage.io import imread
 import re
 import shutil
 
 # =====================
 # SETTINGS
 # =====================
-DATASET_DIR = Path("doc") / "img" / "butterFly"
+DATASET_DIR = Path(os.environ.get("DIC_BENCH_DATASET_DIR", "doc/img/butterFly"))
 REF_IMAGE_NAME = "VIS_0000.tif"
 MASK_FILENAME = "roi.tif"
 IMAGE_PATTERN = "VIS_*.tif"
@@ -34,11 +35,13 @@ NFRAMES = 8
 DO_WARMUP = True
 EXPORT_NPZ = True
 EXPORT_FIGURES = False
+EXPORT_INDICATOR_FIGURE = True
 MAX_ITER = 400
 TOL = 1e-2
 OUTPUT_DIR = Path("doc") / "benchmark_results"
-MESH_ELEMENT_SIZE_PX = 40.0
-DIC_REG_TYPE = "spring"
+MESH_ELEMENT_SIZE_PX = 15.
+IMAGE_BINNING = 1
+INTERPOLATION = "cubic"
 DIC_ALPHA_REG = 0.5
 LOCAL_SWEEPS = 3
 LOCAL_LAM = 0.1
@@ -59,6 +62,7 @@ PLOT_CMAP = "jet"
 PLOT_ALPHA = 0.6
 FRAMES_TO_PLOT: Optional[List[int]] = None
 FIG_COMPONENTS = ("Ux", "Uy", "Exx", "Exy", "Eyy")
+RANDOM_SEED = 0
 
 BASE_DIR = Path(__file__).resolve().parents[1]  # repository root
 DATASET_PATH = (BASE_DIR / DATASET_DIR).resolve()
@@ -73,6 +77,11 @@ STEP_LABELS = [
     ("G_npz_export_s", "G: export NPZ"),
     ("G_figures_export_s", "G: export figures"),
     ("H_total_s", "H: total"),
+]
+INDICATOR_LABELS = [
+    ("indicator_solve_total_s", "Solve total (series)"),
+    ("indicator_prep_s", "Prep once (A-D)"),
+    ("indicator_frame_mean_s", "Per-frame mean"),
 ]
 
 
@@ -151,6 +160,9 @@ def limit_extrapolation(guess: np.ndarray, anchor: np.ndarray, threshold: float)
 
 
 def run_backend_benchmark(backend: str, base_slug: Optional[str] = None) -> Dict[str, Any]:
+    os.environ.setdefault("PYTHONHASHSEED", str(RANDOM_SEED))
+    random.seed(RANDOM_SEED)
+    np.random.seed(RANDOM_SEED)
     os.environ["JAX_PLATFORM_NAME"] = backend
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     import jax
@@ -162,9 +174,20 @@ def run_backend_benchmark(backend: str, base_slug: Optional[str] = None) -> Dict
         raise RuntimeError(f"Unable to initialize JAX backend '{backend}': {err}") from err
     if backend == "gpu" and not any(dev.platform == "gpu" for dev in devices):
         raise RuntimeError("No GPU detected for backend 'gpu'.")
-    from d2ic import generate_roi_mesh
-    from d2ic.dic import Dic
-    from d2ic.dic_plotter import DICPlotter
+    from d2ic import (
+        mask_to_mesh_assets,
+        mask_to_mesh_assets_gmsh,
+        MeshDICConfig,
+        DICMeshBased,
+        GlobalCGSolver,
+        LocalGaussNewtonSolver,
+        PreviousDisplacementPropagator,
+        ConstantVelocityPropagator,
+    )
+    from d2ic.app_utils import prepare_image, imread_gray, list_deformed_images
+    from d2ic.mesh_assets import build_node_neighbor_tables
+    from d2ic.pixel_assets import build_pixel_assets
+    from d2ic.plotter import DICPlotter
 
     base_slug_sanitized = sanitize_label(base_slug or os.environ.get("DIC_BENCH_BASE_SLUG") or get_base_slug())
     cpu_info = collect_cpu_info()
@@ -189,109 +212,117 @@ def run_backend_benchmark(backend: str, base_slug: Optional[str] = None) -> Dict
     # Step A: data loading
     with StepTimer(timings, "A_data_load_s"):
         mask_path = DATASET_PATH / MASK_FILENAME
-        im_ref = imread(DATASET_PATH / REF_IMAGE_NAME).astype(float)
-        all_imgs = sorted(DATASET_PATH.glob(IMAGE_PATTERN))
-        frame_paths = [p for p in all_imgs if p.name != REF_IMAGE_NAME]
+        ref_path = DATASET_PATH / REF_IMAGE_NAME
+        if not ref_path.exists():
+            raise FileNotFoundError(f"Reference image not found: {ref_path}")
+        if not mask_path.exists():
+            raise FileNotFoundError(f"Mask image not found: {mask_path}")
+        im_ref = prepare_image(ref_path, binning=IMAGE_BINNING)
+        frame_paths = list_deformed_images(DATASET_PATH, IMAGE_PATTERN, exclude_name=REF_IMAGE_NAME)
         if not frame_paths:
             raise RuntimeError("No deformed frames found for benchmarking.")
         frames = frame_paths[:NFRAMES]
-        images_def = [imread(p).astype(float) for p in frames]
+        images_def = [prepare_image(p, binning=IMAGE_BINNING) for p in frames]
+        mask = imread_gray(mask_path) > 0.5
 
     # Step B: mesh + Dic
     with StepTimer(timings, "B_dic_setup_s"):
-        mesh_path = backend_dir / f"roi_mesh_{backend}.msh"
-        mesh_generated = generate_roi_mesh(mask_path, element_size=MESH_ELEMENT_SIZE_PX, msh_path=str(mesh_path))
-        if mesh_generated is None:
-            raise RuntimeError("Mesh generation failed.")
-        dic = Dic(mesh_path=str(mesh_path))
+        try:
+            mesh, assets = mask_to_mesh_assets_gmsh(
+                mask=mask,
+                element_size_px=MESH_ELEMENT_SIZE_PX,
+                binning=IMAGE_BINNING,
+                remove_islands=True,
+                min_island_area_px=64,
+            )
+        except Exception:
+            mesh, assets = mask_to_mesh_assets(
+                mask=mask,
+                element_size_px=MESH_ELEMENT_SIZE_PX,
+                binning=IMAGE_BINNING,
+                remove_islands=True,
+                min_island_area_px=64,
+            )
+
+        mesh_cfg = MeshDICConfig(
+            max_iters=MAX_ITER,
+            tol=TOL,
+            reg_strength=DIC_ALPHA_REG,
+            strain_gauge_length=STRAIN_GAUGE_LENGTH,
+            save_history=False,
+            compute_discrepancy_map=False,
+        )
+        dic = DICMeshBased(
+            mesh=mesh,
+            solver=GlobalCGSolver(interpolation=INTERPOLATION, verbose=False),
+            config=mesh_cfg,
+        )
+        dic_local = None
+        if LOCAL_SWEEPS > 0:
+            local_cfg = MeshDICConfig(
+                max_iters=LOCAL_SWEEPS,
+                tol=TOL,
+                reg_strength=LOCAL_ALPHA_REG,
+                strain_gauge_length=STRAIN_GAUGE_LENGTH,
+                save_history=False,
+                compute_discrepancy_map=True,
+            )
+            local_solver = LocalGaussNewtonSolver(
+                lam=LOCAL_LAM,
+                max_step=LOCAL_MAX_STEP,
+                omega=LOCAL_OMEGA,
+                interpolation=INTERPOLATION,
+            )
+            dic_local = DICMeshBased(mesh=mesh, solver=local_solver, config=local_cfg)
+        propagator = ConstantVelocityPropagator() if USE_VELOCITY else PreviousDisplacementPropagator()
 
     # Step C: precompute pixel data
     with StepTimer(timings, "C_precompute_s"):
-        dic.precompute_pixel_data(im_ref)
+        if assets.node_neighbor_index is None or assets.node_neighbor_degree is None:
+            idx, deg = build_node_neighbor_tables(mesh)
+            assets = replace(assets, node_neighbor_index=idx, node_neighbor_degree=deg)
+        pixel_data = build_pixel_assets(mesh=mesh, ref_image=im_ref, binning=IMAGE_BINNING, roi_mask=assets.roi_mask)
+        assets = replace(assets, pixel_data=pixel_data)
 
-    n_nodes = int(dic.node_coordinates.shape[0])
-    warmup_im = images_def[0]
     if DO_WARMUP:
         with StepTimer(timings, "D_warmup_s"):
-            warmup_disp_guess = np.zeros((n_nodes, 2))
-            disp_warmup, _ = dic.run_dic(
-                im_ref,
-                warmup_im,
-                disp_guess=warmup_disp_guess,
-                max_iter=MAX_ITER,
-                tol=TOL,
-                reg_type=DIC_REG_TYPE,
-                alpha_reg=DIC_ALPHA_REG,
-                save_history=False,
-            )
-            disp_warmup.block_until_ready()
+            dic.prepare(im_ref, assets)
+            if dic_local is not None:
+                dic_local.prepare(im_ref, assets)
     else:
+        dic.prepare(im_ref, assets)
+        if dic_local is not None:
+            dic_local.prepare(im_ref, assets)
         timings["D_warmup_s"] = 0.0
 
     disp_history: List[np.ndarray] = []
-    F_all = np.zeros((len(images_def), n_nodes, 2, 2))
-    E_all = np.zeros_like(F_all)
+    strain_history: List[np.ndarray] = []
+    results_history = []
     frame_names = [p.name for p in frames]
+    u_prev = None
+    u_prevprev = None
 
     for idx, im_def in enumerate(images_def):
         frame_start = time.perf_counter()
-        if idx == 0:
-            disp_guess, _ = dic.compute_feature_disp_guess_big_motion(
-                im_ref,
-                im_def,
-                n_patches=FEATURE_N_PATCHES,
-                patch_win=FEATURE_PATCH_WIN,
-                patch_search=FEATURE_PATCH_SEARCH,
-                refine=FEATURE_REFINE,
-                search_dilation=FEATURE_SEARCH_DILATION,
-            )
-            disp_guess = np.asarray(disp_guess)
-        else:
-            disp_guess = np.asarray(disp_history[-1])
-            if USE_VELOCITY and idx >= 2:
-                v_prev = disp_history[-1] - disp_history[-2]
-                disp_guess = disp_guess + VEL_SMOOTHING * v_prev
-                disp_guess = limit_extrapolation(disp_guess, disp_history[-1], MAX_EXTRAPOLATION)
-        disp_sol, _ = dic.run_dic(
-            im_ref,
-            im_def,
-            disp_guess=disp_guess,
-            max_iter=MAX_ITER,
-            tol=TOL,
-            reg_type=DIC_REG_TYPE,
-            alpha_reg=DIC_ALPHA_REG,
-            save_history=False,
-        )
-        disp_sol.block_until_ready()
-        if LOCAL_SWEEPS > 0:
-            disp_sol = dic.run_dic_nodal(
-                im_ref,
-                im_def,
-                disp_init=disp_sol,
-                n_sweeps=LOCAL_SWEEPS,
-                lam=LOCAL_LAM,
-                reg_type="spring_jacobi",
-                alpha_reg=LOCAL_ALPHA_REG,
-                max_step=LOCAL_MAX_STEP,
-                omega_local=LOCAL_OMEGA,
-            )
-            disp_sol.block_until_ready()
-        disp_np = np.asarray(disp_sol)
+        u_warm = propagator.propagate(u_prev=u_prev, u_prevprev=u_prevprev) if propagator else None
+        if u_warm is not None:
+            dic.set_initial_guess(u_warm)
+        res = dic.run(im_def)
+        if dic_local is not None:
+            dic_local.set_initial_guess(res.u_nodal)
+            res = dic_local.run(im_def)
+        disp_np = np.asarray(res.u_nodal)
         disp_history.append(disp_np)
+        strain_history.append(np.asarray(res.strain))
+        results_history.append(res)
+        u_prevprev = u_prev
+        u_prev = disp_np
         per_frame_times.append(time.perf_counter() - frame_start)
 
     solve_total = float(np.sum(per_frame_times))
     timings["E_solve_total_s"] = solve_total
 
-    with StepTimer(timings, "F_strain_s"):
-        for i, disp_np in enumerate(disp_history):
-            F_k, E_k = dic.compute_green_lagrange_strain_nodes(
-                disp_np,
-                k_ring=STRAIN_K_RING,
-                gauge_length=STRAIN_GAUGE_LENGTH,
-            )
-            F_all[i] = np.asarray(F_k)
-            E_all[i] = np.asarray(E_k)
+    timings["F_strain_s"] = 0.0
 
     npz_time = 0.0
     if EXPORT_NPZ:
@@ -299,8 +330,7 @@ def run_backend_benchmark(backend: str, base_slug: Optional[str] = None) -> Dict
             np.savez(
                 backend_dir / f"fields_{backend}.npz",
                 disp=np.asarray(disp_history),
-                F=F_all,
-                E=E_all,
+                strain=np.asarray(strain_history),
                 frame_names=np.array(frame_names),
             )
     else:
@@ -309,22 +339,38 @@ def run_backend_benchmark(backend: str, base_slug: Optional[str] = None) -> Dict
     fig_time = 0.0
     if EXPORT_FIGURES:
         frames_to_plot = FRAMES_TO_PLOT if FRAMES_TO_PLOT is not None else list(range(len(disp_history)))
+        component_map = {
+            "ux": "u1",
+            "uy": "u2",
+            "exx": "e11",
+            "exy": "e12",
+            "eyy": "e22",
+        }
         with StepTimer(timings, "G_figures_export_s"):
             for idx in frames_to_plot:
                 if idx >= len(disp_history):
                     continue
                 plotter = DICPlotter(
-                    background_image=images_def[idx],
-                    displacement=disp_history[idx],
-                    strain_fields=(F_all[idx], E_all[idx]),
-                    dic_object=dic,
+                    result=results_history[idx],
+                    mesh=mesh,
+                    def_image=images_def[idx],
+                    ref_image=im_ref,
+                    binning=IMAGE_BINNING,
+                    pixel_assets=assets.pixel_data,
+                    project_on_deformed="fast",
                 )
                 for comp in FIG_COMPONENTS:
-                    if comp.lower() in {"ux", "uy"}:
-                        fig, _ = plotter.plot_displacement_component(comp, cmap=PLOT_CMAP, image_alpha=PLOT_ALPHA)
-                    else:
-                        fig, _ = plotter.plot_strain_component(comp, cmap=PLOT_CMAP, image_alpha=PLOT_ALPHA)
-                    fig.savefig(backend_dir / f"{comp}_frame_{idx:03d}.png", dpi=200)
+                    field_key = component_map.get(comp.lower())
+                    if field_key is None:
+                        continue
+                    fig, ax = plotter.plot(
+                        field=field_key,
+                        image_alpha=PLOT_ALPHA,
+                        cmap=PLOT_CMAP,
+                        plotmesh=True,
+                    )
+                    ax.set_title(f"{field_key.upper()} frame {idx}")
+                    fig.savefig(backend_dir / f"{field_key}_frame_{idx:03d}.png", dpi=200)
                     plt.close(fig)
     else:
         timings["G_figures_export_s"] = 0.0
@@ -333,6 +379,14 @@ def run_backend_benchmark(backend: str, base_slug: Optional[str] = None) -> Dict
 
     per_frame_mean = statistics.mean(per_frame_times) if per_frame_times else 0.0
     per_frame_std = statistics.pstdev(per_frame_times) if len(per_frame_times) > 1 else 0.0
+    prep_total = sum(
+        timings.get(key, 0.0) for key in ("A_data_load_s", "B_dic_setup_s", "C_precompute_s", "D_warmup_s")
+    )
+    indicators = {
+        "indicator_solve_total_s": timings.get("E_solve_total_s", solve_total),
+        "indicator_prep_s": prep_total,
+        "indicator_frame_mean_s": per_frame_mean,
+    }
 
     result = {
         "backend": backend,
@@ -340,15 +394,20 @@ def run_backend_benchmark(backend: str, base_slug: Optional[str] = None) -> Dict
         "machine_id": run_id,
         "base_slug": base_slug_sanitized,
         "settings": {
+            "DATASET_DIR": str(DATASET_DIR),
             "NFRAMES": NFRAMES,
             "MAX_ITER": MAX_ITER,
             "TOL": TOL,
             "EXPORT_NPZ": EXPORT_NPZ,
             "EXPORT_FIGURES": EXPORT_FIGURES,
+            "RANDOM_SEED": RANDOM_SEED,
+            "IMAGE_BINNING": IMAGE_BINNING,
+            "INTERPOLATION": INTERPOLATION,
         },
         "cpu_info": cpu_info,
         "gpu_info": gpu_info,
         "timings": timings,
+        "indicators": indicators,
         "per_frame_s": per_frame_times,
         "per_frame_mean_s": per_frame_mean,
         "per_frame_std_s": per_frame_std,
@@ -475,6 +534,55 @@ def run_parent() -> None:
         std_g = gpu_res.get("per_frame_std_s", 0.0)
         print(f"GPU per-frame solve: {mean_g:.3f} ± {std_g:.3f} s")
 
+    def build_indicators(result: Optional[Dict[str, Any]]) -> Optional[Dict[str, float]]:
+        if not result or result.get("status") != "ok":
+            return None
+        indicators = result.get("indicators")
+        if indicators:
+            return {key: float(indicators.get(key, 0.0)) for key, _ in INDICATOR_LABELS}
+        timings = result.get("timings", {})
+        prep_total = sum(
+            timings.get(key, 0.0) for key in ("A_data_load_s", "B_dic_setup_s", "C_precompute_s", "D_warmup_s")
+        )
+        return {
+            "indicator_solve_total_s": float(timings.get("E_solve_total_s", result.get("per_frame_total_s", 0.0))),
+            "indicator_prep_s": float(prep_total),
+            "indicator_frame_mean_s": float(result.get("per_frame_mean_s", 0.0)),
+        }
+
+    def plot_indicator_histogram(
+        cpu_indicators: Dict[str, float],
+        gpu_indicators: Dict[str, float],
+        out_path: Path,
+    ) -> None:
+        labels = [label for _key, label in INDICATOR_LABELS]
+        cpu_vals = [cpu_indicators.get(key, 0.0) for key, _label in INDICATOR_LABELS]
+        gpu_vals = [gpu_indicators.get(key, 0.0) for key, _label in INDICATOR_LABELS]
+        x = np.arange(len(labels))
+        width = 0.35
+        fig, ax = plt.subplots(figsize=(8.4, 4.8))
+        bars_cpu = ax.bar(x - width / 2, cpu_vals, width, label="CPU", color="#4c78a8")
+        bars_gpu = ax.bar(x + width / 2, gpu_vals, width, label="GPU", color="#f58518")
+        ax.set_ylabel("Time (s)")
+        ax.set_xticks(x, labels)
+        ax.set_title("Benchmark indicators: CPU vs GPU")
+        ax.legend()
+        ax.grid(axis="y", linestyle="--", alpha=0.35)
+        for bars in (bars_cpu, bars_gpu):
+            for rect in bars:
+                height = rect.get_height()
+                ax.text(
+                    rect.get_x() + rect.get_width() / 2,
+                    height,
+                    f"{height:.2f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=9,
+                )
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=200)
+        plt.close(fig)
+
     summary_csv = OUTPUT_PATH / "benchmark_results_summary.csv"
     with summary_csv.open("w", encoding="utf-8") as fh:
         fh.write("Step,CPU_s,GPU_s,Speedup\n")
@@ -483,6 +591,15 @@ def run_parent() -> None:
             g_txt = f"{g_val:.6f}" if isinstance(g_val, (int, float)) else ""
             s_txt = f"{speedup:.6f}" if isinstance(speedup, (int, float)) else ""
             fh.write(f"{label},{c_txt},{g_txt},{s_txt}\n")
+
+    cpu_ind = build_indicators(cpu_res)
+    gpu_ind = build_indicators(gpu_res)
+    if EXPORT_INDICATOR_FIGURE and cpu_ind and gpu_ind:
+        indicator_plot = OUTPUT_PATH / f"benchmark_indicators_{base_slug}.png"
+        plot_indicator_histogram(cpu_ind, gpu_ind, indicator_plot)
+        print(f"\nIndicator histogram saved to {indicator_plot}")
+    else:
+        print("\nIndicator histogram skipped (missing CPU/GPU results).")
 
 
 def run_child(backend: str) -> None:
