@@ -12,8 +12,8 @@
     "device_name": "NVIDIA RTX 2000 Ada Generation Laptop GPU"
   },
   "indicators": {
-    "prep_s": 44.40394640299996,
-    "per_frame_s": 1.8349921903636228,
-    "total_s": 64.58887899699994
+    "prep_s": 43.845450480999716,
+    "per_frame_s": 0.39929997500009695,
+    "total_s": 48.23776560599981
   }
 }
