@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 import jax
@@ -97,7 +98,7 @@ def _zncc_argmax(template: Array, windows: Array) -> tuple[jnp.ndarray, jnp.ndar
     return best_idx, best_score
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=("win", "search"))
 def _extract_windows_jax(patch: Array, win: int, search: int) -> Array:
     """Return all ``win``-sized windows from ``patch`` as ``(N, win, win)``."""
     windows_per_axis = 2 * search + 1
@@ -114,7 +115,7 @@ def _extract_windows_jax(patch: Array, win: int, search: int) -> Array:
     return jax.vmap(slice_at)(offsets)
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=("win", "search"))
 def _match_centers_jax(
     centers: Array,
     ref_image: Array,

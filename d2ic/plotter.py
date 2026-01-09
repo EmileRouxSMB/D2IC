@@ -589,6 +589,36 @@ class DICPlotter:
 
         return selected, field_map
 
+    @staticmethod
+    def _resolve_color_limits(
+        masked: np.ma.MaskedArray,
+        vmin: float | None,
+        vmax: float | None,
+    ) -> tuple[float, float] | None:
+        if masked.count() == 0:
+            return None
+
+        if vmin is None and vmax is None:
+            vmin_data = float(masked.min())
+            vmax_data = float(masked.max())
+            if vmin_data == vmax_data:
+                return None
+            return vmin_data, vmax_data
+
+        vmin_data = float(masked.min()) if vmin is None else float(vmin)
+        vmax_data = float(masked.max()) if vmax is None else float(vmax)
+
+        if not np.isfinite(vmin_data) or not np.isfinite(vmax_data):
+            return None
+
+        if vmin_data > vmax_data:
+            vmin_data, vmax_data = vmax_data, vmin_data
+
+        if vmin_data == vmax_data:
+            return None
+
+        return vmin_data, vmax_data
+
     def plot_into(
         self,
         ax: Axes,
@@ -597,6 +627,8 @@ class DICPlotter:
         cmap: str = "jet",
         plotmesh: bool = True,
         add_colorbar: bool = True,
+        vmin: float | None = None,
+        vmax: float | None = None,
     ) -> tuple[Axes, Optional[Colorbar]]:
         """
         Plot a scalar field into an existing Matplotlib axis.
@@ -626,11 +658,9 @@ class DICPlotter:
         overlay.set_data(masked)
         overlay.set_alpha(image_alpha)
         overlay.set_cmap(cmap)
-        if masked.count() > 0:
-            vmin = masked.min()
-            vmax = masked.max()
-            if vmin != vmax:
-                overlay.set_clim(vmin=float(vmin), vmax=float(vmax))
+        clim = self._resolve_color_limits(masked, vmin=vmin, vmax=vmax)
+        if clim is not None:
+            overlay.set_clim(vmin=clim[0], vmax=clim[1])
         if colorbar is not None:
             colorbar.set_label(selected.label)
             colorbar.update_normal(overlay)
@@ -645,6 +675,8 @@ class DICPlotter:
         cmap: str = "jet",
         figsize: Tuple[float, float] = (6.0, 6.0),
         plotmesh: bool = True,
+        vmin: float | None = None,
+        vmax: float | None = None,
     ) -> Tuple[Figure, Axes]:
         """
         Plot a scalar field over the deformed image.
@@ -662,11 +694,9 @@ class DICPlotter:
         self._overlay_im.set_data(masked)
         self._overlay_im.set_alpha(image_alpha)
         self._overlay_im.set_cmap(cmap)
-        if masked.count() > 0:
-            vmin = masked.min()
-            vmax = masked.max()
-            if vmin != vmax:
-                self._overlay_im.set_clim(vmin=float(vmin), vmax=float(vmax))
+        clim = self._resolve_color_limits(masked, vmin=vmin, vmax=vmax)
+        if clim is not None:
+            self._overlay_im.set_clim(vmin=clim[0], vmax=clim[1])
         self._colorbar.set_label(selected.label)
         self._colorbar.update_normal(self._overlay_im)
         self._ax.set_title(selected.label)
