@@ -133,14 +133,14 @@ For a coarse first-frame initialization (translation-only ZNCC at element center
 If you use D²IC in academic work, please cite the accompanying article manuscript (not yet published):
 
 **Plain text**
-- Roux, E. *D²IC: a differentiable 2D digital image correlation framework*. Manuscript submitted to SoftwareX, 2025.
+- Roux, E. *D²IC: a differentiable 2D digital image correlation framework*. Manuscript submitted to SoftwareX, 2026.
 
 **BibTeX**
 ```bibtex
 @unpublished{roux2025d2ic,
   title  = {{$D^2IC$}: a differentiable 2D digital image correlation framework},
   author = {Roux, Emile},
-  year   = {2025},
+  year   = {2026},
   note   = {Manuscript submitted to SoftwareX (under review)},
 }
 ```
