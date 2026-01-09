@@ -1,3 +1,0 @@
-machine_id,backend,status,A_data_load_s,B_dic_setup_s,C_precompute_s,D_warmup_s,E_solve_total_s,F_strain_s,G_npz_export_s,G_figures_export_s,H_total_s,per_frame_mean_s,per_frame_std_s,per_frame_total_s
-f5033d9e1fce-x86-64__x86-64__cpu,cpu,ok,0.076937,0.984996,1.221507,0.514583,6.035146,0.000000,0.007418,0.000000,8.840698,0.754393,0.288164,6.035146
-f5033d9e1fce-x86-64__nvidia-rtx-2000-ada-generation-laptop-gpu__gpu,gpu,ok,0.097048,1.231548,23.457500,1.732630,15.878341,0.000000,0.008767,0.000000,42.405942,1.984793,0.599483,15.878341
