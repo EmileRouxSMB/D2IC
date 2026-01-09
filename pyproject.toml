@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "D2IC"
-version = "0.1"
+version = "1.0.1"
 description = "A differentiable framework for full-field kinematic identification."
 readme = "README.md"
 authors = [{ name = "Emile Roux", email = "emile.roux@univ-smb.fr" }]
