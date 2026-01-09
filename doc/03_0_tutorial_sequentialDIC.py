@@ -93,6 +93,9 @@ INTERPOLATION = "cubic"
 # Debug prints from inside JAX-compiled loops (CG iterations).
 VERBOSE = True
 
+# force CPU as jax default platform
+configure_jax_platform(preferred="cpu" , fallback="cpu")
+
 
 def run_pipeline_sequence() -> Tuple[np.ndarray, np.ndarray]:
     """Run the full `d2ic` batch pipeline using the parameters defined above."""
