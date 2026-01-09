@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Optional
 
-import numpy as np
 import jax.numpy as jnp
 
 from .dic_base import DICBase
@@ -119,7 +118,7 @@ class DICMeshBased(DICBase):
             try:
                 _, E_all = compute_green_lagrange_strain_nodes_lsq(
                     displacement=u_nodal,
-                    nodes_coord=assets.mesh.nodes_xy,
+                    nodes_coord=self._state.nodes_xy_device,
                     node_neighbor_index=assets.node_neighbor_index,
                     node_neighbor_degree=assets.node_neighbor_degree,
                     gauge_length=self.config.strain_gauge_length,
@@ -145,7 +144,9 @@ class DICMeshBased(DICBase):
                     u_nodal=u_nodal,
                     pixel_assets=assets.pixel_data,
                 )
-                pixel_maps["discrepancy_ref"] = np.asarray(disc_map, dtype=np.float32)
+                # Keep the map on the current JAX backend; converting to NumPy here
+                # forces a device->host sync and can dominate per-frame time on GPU.
+                pixel_maps["discrepancy_ref"] = jnp.asarray(disc_map, dtype=jnp.float32)
                 diag_info["discrepancy"] = "discrepancy_ref"
                 diag_info["discrepancy_rms"] = float(disc_rms)
 

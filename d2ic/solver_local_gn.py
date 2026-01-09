@@ -328,119 +328,90 @@ def jacobi_nodal_step_spring(
     omega=0.5,
 ):
     """Relaxed Jacobi update mixing pixel residuals and spring regularization."""
-    disp0 = displacement
+    disp0 = jnp.asarray(displacement)
     dtype = disp0.dtype
+    alpha_reg = jnp.asarray(alpha_reg, dtype=dtype)
+    lam = jnp.asarray(lam, dtype=dtype)
+    max_step = jnp.asarray(max_step, dtype=dtype)
+    omega = jnp.asarray(omega, dtype=dtype)
+
     Nnodes, max_deg_pix = node_pixel_index.shape
     _, max_deg_neigh = node_neighbor_index.shape
+
     node_reg_weight = jnp.asarray(node_reg_weight, dtype=dtype)
+    deg_pix = jnp.asarray(node_degree)
+    deg_neigh = jnp.asarray(node_neighbor_degree)
 
-    def body_fun(i, delta_acc):
-        deg_pix = node_degree[i]
-        deg_neigh = node_neighbor_degree[i]
+    # ----------------------------
+    # Image term (vectorized over nodes)
+    # ----------------------------
+    pix_mask = jnp.arange(max_deg_pix)[None, :] < deg_pix[:, None]
+    pix_idx = jnp.where(pix_mask, node_pixel_index, 0)
+    Ni = jnp.where(pix_mask, jnp.asarray(node_N_weight, dtype=dtype), jnp.asarray(0.0, dtype=dtype))
 
-        def no_pixel_case(delta_acc_inner):
-            def only_return_delta(_):
-                return delta_acc_inner
+    ri = r[pix_idx]
+    gxi = gx_def[pix_idx]
+    gyi = gy_def[pix_idx]
 
-            def apply_reg_only(_):
-                u_i = disp0[i]
+    Jx = gxi * Ni
+    Jy = gyi * Ni
 
-                idx_range_n = jnp.arange(max_deg_neigh)
-                mask_n = idx_range_n < deg_neigh
+    g0_img = jnp.sum(ri * Jx, axis=1)
+    g1_img = jnp.sum(ri * Jy, axis=1)
+    g_img = jnp.stack([g0_img, g1_img], axis=1)  # (Nnodes, 2)
 
-                neigh_ids_all = node_neighbor_index[i]
-                w_all = node_neighbor_weight[i]
+    H00 = jnp.sum(Jx * Jx, axis=1)
+    H01 = jnp.sum(Jx * Jy, axis=1)
+    H11 = jnp.sum(Jy * Jy, axis=1)
 
-                neigh_ids = jnp.where(mask_n, neigh_ids_all, 0)
-                w = jnp.where(mask_n, w_all, jnp.asarray(0.0, dtype=dtype))
+    traceH = H00 + H11 + jnp.asarray(1e-12, dtype=dtype)
+    lam_loc = lam * traceH
+    H_img = jnp.stack(
+        [
+            jnp.stack([H00 + lam_loc, H01], axis=1),
+            jnp.stack([H01, H11 + lam_loc], axis=1),
+        ],
+        axis=1,
+    )  # (Nnodes, 2, 2)
 
-                u_neigh = disp0[neigh_ids]
-                u_neigh = jnp.where(mask_n[:, None], u_neigh, jnp.asarray(0.0, dtype=dtype))
+    # ----------------------------
+    # Regularization term (vectorized over nodes)
+    # ----------------------------
+    neigh_mask = jnp.arange(max_deg_neigh)[None, :] < deg_neigh[:, None]
+    neigh_ids = jnp.where(neigh_mask, node_neighbor_index, 0)
+    w = jnp.where(neigh_mask, jnp.asarray(node_neighbor_weight, dtype=dtype), jnp.asarray(0.0, dtype=dtype))
 
-                diff = u_i[None, :] - u_neigh
-                alpha_loc = alpha_reg * node_reg_weight[i]
-                g_reg = alpha_loc * jnp.sum(w[:, None] * diff, axis=0)
-                H_reg = alpha_loc * jnp.sum(w) * jnp.eye(2, dtype=dtype)
+    u_i = disp0[:, None, :]  # (Nnodes, 1, 2)
+    u_neigh = disp0[neigh_ids]  # (Nnodes, max_deg_neigh, 2)
+    u_neigh = jnp.where(neigh_mask[..., None], u_neigh, jnp.asarray(0.0, dtype=dtype))
 
-                g_loc = g_reg
-                H = H_reg + jnp.asarray(1e-8, dtype=dtype) * jnp.eye(2, dtype=dtype)
-                delta_i = -jnp.linalg.solve(H, g_loc)
+    diff = u_i - u_neigh
+    alpha_loc = alpha_reg * node_reg_weight  # (Nnodes,)
+    g_reg = alpha_loc[:, None] * jnp.sum(w[..., None] * diff, axis=1)  # (Nnodes, 2)
 
-                norm_delta = jnp.linalg.norm(delta_i)
-                factor = jnp.minimum(1.0, max_step / (norm_delta + 1e-12))
-                delta_i = delta_i * factor
+    sumw = jnp.sum(w, axis=1)  # (Nnodes,)
+    eye2 = jnp.eye(2, dtype=dtype)[None, :, :]
+    H_reg = (alpha_loc * sumw)[:, None, None] * eye2  # (Nnodes, 2, 2)
 
-                return delta_acc_inner.at[i].set(delta_i)
+    # ----------------------------
+    # Combine, solve, clip, and relax
+    # ----------------------------
+    has_reg = jnp.logical_and(alpha_reg != jnp.asarray(0.0, dtype=dtype), deg_neigh > 0)
+    has_pix = deg_pix > 0
+    has_update = jnp.logical_or(has_pix, has_reg)
 
-            cond_reg = jnp.logical_and(alpha_reg != 0.0, deg_neigh > 0)
-            return lax.cond(cond_reg, apply_reg_only, only_return_delta, operand=None)
+    g_loc = g_img + g_reg
+    H = H_img + H_reg + jnp.asarray(1e-8, dtype=dtype) * eye2
+    delta = -jnp.linalg.solve(H, g_loc[..., None])[..., 0]  # (Nnodes, 2)
 
-        def update_case(delta_acc_inner):
-            idx_all = node_pixel_index[i]
-            Ni_all = node_N_weight[i]
-            idx_range = jnp.arange(max_deg_pix)
-            mask_pix = idx_range < deg_pix
+    # If a node has neither pixels nor neighbors, keep delta at 0.
+    delta = jnp.where(has_update[:, None], delta, jnp.asarray(0.0, dtype=dtype))
 
-            idx = jnp.where(mask_pix, idx_all, 0)
-            Ni = jnp.where(mask_pix, Ni_all, jnp.asarray(0.0, dtype=dtype))
+    norm_delta = jnp.linalg.norm(delta, axis=1)
+    factor = jnp.minimum(jnp.asarray(1.0, dtype=dtype), max_step / (norm_delta + jnp.asarray(1e-12, dtype=dtype)))
+    delta = delta * factor[:, None]
 
-            ri = r[idx]
-            gxi = gx_def[idx]
-            gyi = gy_def[idx]
-
-            Jx = gxi * Ni
-            Jy = gyi * Ni
-
-            g0_img = jnp.sum(ri * Jx)
-            g1_img = jnp.sum(ri * Jy)
-            g_img = jnp.array([g0_img, g1_img], dtype=dtype)
-
-            H00 = jnp.sum(Jx * Jx)
-            H01 = jnp.sum(Jx * Jy)
-            H11 = jnp.sum(Jy * Jy)
-
-            traceH = H00 + H11 + 1e-12
-            lam_loc = lam * traceH
-            H_img = jnp.array(
-                [[H00 + lam_loc, H01], [H01, H11 + lam_loc]],
-                dtype=dtype,
-            )
-
-            u_i = disp0[i]
-            idx_range_n = jnp.arange(max_deg_neigh)
-            mask_n = idx_range_n < deg_neigh
-
-            neigh_ids_all = node_neighbor_index[i]
-            w_all = node_neighbor_weight[i]
-
-            neigh_ids = jnp.where(mask_n, neigh_ids_all, 0)
-            w = jnp.where(mask_n, w_all, jnp.asarray(0.0, dtype=dtype))
-
-            u_neigh = disp0[neigh_ids]
-            u_neigh = jnp.where(mask_n[:, None], u_neigh, jnp.asarray(0.0, dtype=dtype))
-
-            diff = u_i[None, :] - u_neigh
-            alpha_loc = alpha_reg * node_reg_weight[i]
-            g_reg = alpha_loc * jnp.sum(w[:, None] * diff, axis=0)
-            H_reg = alpha_loc * jnp.sum(w) * jnp.eye(2, dtype=dtype)
-
-            g_loc = g_img + g_reg
-            H = H_img + H_reg + jnp.asarray(1e-8, dtype=dtype) * jnp.eye(2, dtype=dtype)
-
-            delta_i = -jnp.linalg.solve(H, g_loc)
-
-            norm_delta = jnp.linalg.norm(delta_i)
-            factor = jnp.minimum(1.0, max_step / (norm_delta + 1e-12))
-            delta_i = delta_i * factor
-
-            return delta_acc_inner.at[i].set(delta_i)
-
-        return lax.cond(deg_pix == 0, no_pixel_case, update_case, delta_acc)
-
-    delta0 = jnp.zeros_like(displacement)
-    delta_all = lax.fori_loop(0, Nnodes, body_fun, delta0)
-    displacement_new = displacement + omega * delta_all
-    return displacement_new
+    return disp0 + omega * delta
 
 
 @jax.jit
