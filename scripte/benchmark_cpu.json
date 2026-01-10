@@ -1,7 +1,9 @@
 {
   "backend": "cpu",
   "status": "ok",
-  "frames": 11,
+  "frames_total": 11,
+  "frames_measured": 10,
+  "dummy_frame": true,
   "cpu": {
     "model": "x86_64",
     "cores": 10,
@@ -9,8 +11,11 @@
   },
   "gpu": null,
   "indicators": {
-    "prep_s": 3.010372537999501,
-    "per_frame_s": 0.8285160722726604,
-    "total_s": 12.124072734000947
+    "pixel_assets_build_s": 1.2031735410018882,
+    "cg_compile_s": 0.5097710539994296,
+    "local_compile_s": 0.3448678450004081,
+    "prep_s": 3.020110694000323,
+    "dic_solve_s": 0.6791234929001803,
+    "total_s": 12.609046805002436
   }
 }

@@ -9,6 +9,7 @@ from .dic_base import DICBase
 from .mesh_assets import (
     Mesh,
     MeshAssets,
+    PixelAssets,
     build_node_neighbor_tables,
     make_mesh_assets,
 )
@@ -25,6 +26,26 @@ try:  # pragma: no cover - optional dependency
     from .pixel_assets import build_pixel_assets
 except Exception:  # pragma: no cover
     build_pixel_assets = None
+
+
+def _pixel_assets_to_device(pix: PixelAssets, device) -> PixelAssets:
+    # PixelAssets is not a JAX pytree; move arrays field-by-field.
+    import jax
+
+    return PixelAssets(
+        pixel_coords_ref=jax.device_put(pix.pixel_coords_ref, device),
+        pixel_nodes=jax.device_put(pix.pixel_nodes, device),
+        pixel_shapeN=jax.device_put(pix.pixel_shapeN, device),
+        node_neighbor_index=jax.device_put(pix.node_neighbor_index, device),
+        node_neighbor_degree=jax.device_put(pix.node_neighbor_degree, device),
+        node_neighbor_weight=jax.device_put(pix.node_neighbor_weight, device),
+        node_reg_weight=jax.device_put(pix.node_reg_weight, device),
+        node_pixel_index=jax.device_put(pix.node_pixel_index, device),
+        node_N_weight=jax.device_put(pix.node_N_weight, device),
+        node_pixel_degree=jax.device_put(pix.node_pixel_degree, device),
+        roi_mask_flat=jax.device_put(pix.roi_mask_flat, device),
+        image_shape=pix.image_shape,
+    )
 
 
 @dataclass
@@ -68,19 +89,49 @@ class DICMeshBased(DICBase):
                     node_neighbor_degree=deg,
                 )
 
+        # Decide the target device once; used for all device-resident arrays.
+        ref_image_dev = jnp.asarray(ref_image)
+        nodes_xy_dev = jnp.asarray(assets.mesh.nodes_xy)
+        _dev_attr = getattr(nodes_xy_dev, "device", None)
+        target_device = _dev_attr() if callable(_dev_attr) else _dev_attr
+
         if assets.pixel_data is None:
             if build_pixel_assets is None:
                 raise RuntimeError("Pixel asset generator is unavailable; supply MeshAssets with pixel_data.")
-            pixel_data = build_pixel_assets(
-                mesh=assets.mesh,
-                ref_image=ref_image,
-                binning=1.0,
-                roi_mask=getattr(assets, "roi_mask", None),
-            )
+            # Pixel-assets construction mixes NumPy + small JAX kernels; doing it on GPU
+            # can incur extra compilation and device overhead. Build on CPU when possible,
+            # then transfer once to the target device for the actual solve.
+            try:  # pragma: no cover - device selection depends on runtime
+                import jax
+
+                cpu_dev = next((d for d in jax.devices() if d.platform == "cpu"), None)
+            except Exception:  # pragma: no cover
+                cpu_dev = None
+
+            if cpu_dev is not None:
+                import jax
+
+                with jax.default_device(cpu_dev):
+                    pixel_data_cpu = build_pixel_assets(
+                        mesh=assets.mesh,
+                        ref_image=ref_image,
+                        binning=1.0,
+                        roi_mask=getattr(assets, "roi_mask", None),
+                    )
+                pixel_data = (
+                    _pixel_assets_to_device(pixel_data_cpu, target_device)
+                    if target_device is not None
+                    else pixel_data_cpu
+                )
+            else:
+                pixel_data = build_pixel_assets(
+                    mesh=assets.mesh,
+                    ref_image=ref_image,
+                    binning=1.0,
+                    roi_mask=getattr(assets, "roi_mask", None),
+                )
             assets = replace(assets, pixel_data=pixel_data)
 
-        ref_image_dev = jnp.asarray(ref_image)
-        nodes_xy_dev = jnp.asarray(assets.mesh.nodes_xy)
         self._state = MeshDICState(
             ref_image=ref_image_dev,
             nodes_xy_device=nodes_xy_dev,

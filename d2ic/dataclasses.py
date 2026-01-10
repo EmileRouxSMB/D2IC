@@ -194,8 +194,11 @@ class BatchConfig:
     prefer_init_motion_over_propagation: bool = False
     verbose: bool = False
     progress: bool = False
-    save_per_frame: bool = False
+    # Stream per-frame numeric outputs by default to avoid unbounded memory growth
+    # on long sequences (and to allow early inspection of partial results).
+    save_per_frame: bool = True
     per_frame_dir: Optional[str] = None
+    keep_results: bool = True
     export_png: bool = False
     export_frames: Sequence[int] | None = None
     png_dir: Optional[str] = None

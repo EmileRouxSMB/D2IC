@@ -10,6 +10,7 @@ import random
 import statistics
 import subprocess
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -51,8 +52,11 @@ GPU_JSON = PWD / "benchmark_gpu.json"
 INDICATOR_PNG = PWD / "benchmark_indicators.png"
 
 INDICATOR_LABELS = [
-    ("prep_s", "Warmup/Prep"),
-    ("per_frame_s", "DIC per frame"),
+    ("pixel_assets_build_s", "Pixel-assets build"),
+    ("cg_compile_s", "CG compile/warmup"),
+    ("local_compile_s", "Local compile/warmup"),
+    ("prep_s", "Warmup/Prep (total)"),
+    ("dic_solve_s", "Résolution DIC"),
     ("total_s", "Total"),
 ]
 
@@ -122,6 +126,7 @@ def run_backend_benchmark(backend: str) -> Dict[str, Any]:
     )
     from d2ic.app_utils import prepare_image, imread_gray, list_deformed_images
     from d2ic.mesh_assets import make_mesh_assets
+    from d2ic.pixel_assets import build_pixel_assets
 
     cpu_info = collect_cpu_info()
     gpu_info = collect_gpu_info(jax)
@@ -162,6 +167,57 @@ def run_backend_benchmark(backend: str) -> Dict[str, Any]:
         )
         assets = make_mesh_assets(mesh, with_neighbors=True)
 
+    roi_mask = getattr(assets, "roi_mask", None)
+    if roi_mask is not None and hasattr(roi_mask, "shape") and roi_mask.shape != im_ref.shape:
+        roi_mask = None
+
+    # Build pixel-assets on CPU to avoid GPU compile/overhead in a geometric precomputation,
+    # then transfer once to the target backend device for the solve.
+    pixel_assets_build_start = time.perf_counter()
+    cpu_dev = None
+    try:  # pragma: no cover - depends on installed backends
+        cpu_devs = jax.devices("cpu")
+        cpu_dev = cpu_devs[0] if cpu_devs else None
+    except Exception:
+        cpu_dev = None
+
+    if cpu_dev is not None:
+        with jax.default_device(cpu_dev):
+            pix_cpu = build_pixel_assets(
+                mesh=assets.mesh,
+                ref_image=im_ref,
+                binning=float(IMAGE_BINNING),
+                roi_mask=roi_mask,
+            )
+    else:
+        pix_cpu = build_pixel_assets(
+            mesh=assets.mesh,
+            ref_image=im_ref,
+            binning=float(IMAGE_BINNING),
+            roi_mask=roi_mask,
+        )
+    pixel_assets_build_s = time.perf_counter() - pixel_assets_build_start
+
+    def pixel_assets_to_device(pix, device):
+        return replace(
+            pix,
+            pixel_coords_ref=jax.device_put(pix.pixel_coords_ref, device),
+            pixel_nodes=jax.device_put(pix.pixel_nodes, device),
+            pixel_shapeN=jax.device_put(pix.pixel_shapeN, device),
+            node_neighbor_index=jax.device_put(pix.node_neighbor_index, device),
+            node_neighbor_degree=jax.device_put(pix.node_neighbor_degree, device),
+            node_neighbor_weight=jax.device_put(pix.node_neighbor_weight, device),
+            node_reg_weight=jax.device_put(pix.node_reg_weight, device),
+            node_pixel_index=jax.device_put(pix.node_pixel_index, device),
+            node_N_weight=jax.device_put(pix.node_N_weight, device),
+            node_pixel_degree=jax.device_put(pix.node_pixel_degree, device),
+            roi_mask_flat=jax.device_put(pix.roi_mask_flat, device),
+        )
+
+    target_device = devices[0]
+    pix = pix_cpu if target_device.platform == "cpu" else pixel_assets_to_device(pix_cpu, target_device)
+    assets = replace(assets, pixel_data=pix)
+
     mesh_cfg = MeshDICConfig(
         max_iters=MAX_ITERS,
         tol=TOL,
@@ -196,45 +252,68 @@ def run_backend_benchmark(backend: str) -> Dict[str, Any]:
 
     propagator = ConstantVelocityPropagator() if USE_VELOCITY else PreviousDisplacementPropagator()
 
+    cg_compile_start = time.perf_counter()
     dic.prepare(im_ref, assets)
+    cg_compile_s = time.perf_counter() - cg_compile_start
+
+    local_compile_s = 0.0
     if dic_local is not None:
+        local_compile_start = time.perf_counter()
         dic_local.prepare(im_ref, assets)
+        local_compile_s = time.perf_counter() - local_compile_start
     jax.block_until_ready(jnp.asarray(im_ref))
 
     prep_time = time.perf_counter() - prep_start
 
-    per_frame_times = []
+    # Dummy frame (unmeasured): forces any remaining autotune/cache population.
     u_prev = None
     u_prevprev = None
-    for im_def in images_def:
-        frame_start = time.perf_counter()
+    if images_def:
+        dummy_def = images_def[0]
+        dummy_res = dic.run(dummy_def)
+        if dic_local is not None:
+            dic_local.set_initial_guess(jnp.copy(jnp.asarray(dummy_res.u_nodal)))
+            dummy_res = dic_local.run(dummy_def)
+        dummy_res.u_nodal.block_until_ready()
+        u_prev = dummy_res.u_nodal
+        u_prevprev = None
+
+    dic_solve_times = []
+    measured_frames = images_def[1:] if len(images_def) > 1 else []
+    for im_def in measured_frames:
         u_warm = propagator.propagate(u_prev=u_prev, u_prevprev=u_prevprev) if propagator else None
         if u_warm is not None:
             # Copy to avoid donated buffers invalidating warm-start history.
             dic.set_initial_guess(jnp.copy(jnp.asarray(u_warm)))
+        solve_start = time.perf_counter()
         res = dic.run(im_def)
         if dic_local is not None:
             # Copy to keep CG output valid after donated local solve.
             dic_local.set_initial_guess(jnp.copy(jnp.asarray(res.u_nodal)))
             res = dic_local.run(im_def)
         res.u_nodal.block_until_ready()
+        dic_solve_times.append(time.perf_counter() - solve_start)
         u_prevprev = u_prev
         u_prev = res.u_nodal
-        per_frame_times.append(time.perf_counter() - frame_start)
 
     total_time = time.perf_counter() - prep_start
 
-    per_frame_mean = statistics.mean(per_frame_times) if per_frame_times else 0.0
+    dic_solve_mean = statistics.mean(dic_solve_times) if dic_solve_times else 0.0
 
     return {
         "backend": backend,
         "status": "ok",
-        "frames": len(images_def),
+        "frames_total": len(images_def),
+        "frames_measured": len(measured_frames),
+        "dummy_frame": bool(images_def),
         "cpu": cpu_info,
         "gpu": gpu_info,
         "indicators": {
+            "pixel_assets_build_s": float(pixel_assets_build_s),
+            "cg_compile_s": float(cg_compile_s),
+            "local_compile_s": float(local_compile_s),
             "prep_s": float(prep_time),
-            "per_frame_s": float(per_frame_mean),
+            "dic_solve_s": float(dic_solve_mean),
             "total_s": float(total_time),
         },
     }
@@ -265,6 +344,7 @@ def plot_indicator_histogram(
     bars_gpu = ax.bar(x + width / 2, gpu_vals, width, label="GPU", color="#f58518")
     ax.set_ylabel("Time (s)")
     ax.set_xticks(x, labels)
+    ax.tick_params(axis="x", labelrotation=30)
     ax.set_title("Benchmark indicators: CPU vs GPU")
     ax.legend()
     ax.grid(axis="y", linestyle="--", alpha=0.35)
@@ -331,8 +411,11 @@ def run_child(backend: str) -> None:
             "cpu": collect_cpu_info(),
             "gpu": None,
             "indicators": {
+                "pixel_assets_build_s": 0.0,
+                "cg_compile_s": 0.0,
+                "local_compile_s": 0.0,
                 "prep_s": 0.0,
-                "per_frame_s": 0.0,
+                "dic_solve_s": 0.0,
                 "total_s": 0.0,
             },
             "error": str(exc),

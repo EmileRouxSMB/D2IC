@@ -68,6 +68,7 @@ class BatchMeshBased(BatchBase):
             raise RuntimeError("BatchMeshBased.before() must be called before sequence().")
 
         save_per_frame = bool(getattr(self.config, "save_per_frame", False))
+        keep_results = bool(getattr(self.config, "keep_results", True))
         per_frame_dir = getattr(self.config, "per_frame_dir", None)
         if save_per_frame:
             if per_frame_dir is None:
@@ -128,6 +129,7 @@ class BatchMeshBased(BatchBase):
                 )
 
         per_frame: list[DICResult] = []
+        n_processed = 0
         u_prev = None
         u_prevprev = None
 
@@ -138,6 +140,7 @@ class BatchMeshBased(BatchBase):
             n_frames = None
 
         for k, Idef in enumerate(images):
+            n_processed += 1
             if progress or verbose:
                 if n_frames is None:
                     print(f"[Batch] Frame {k + 1}: start")
@@ -170,7 +173,8 @@ class BatchMeshBased(BatchBase):
                 res = self.dic_local.run(Idef)
                 if verbose:
                     _print_history(res.history, label="Local")
-            per_frame.append(res)
+            if keep_results:
+                per_frame.append(res)
             if save_per_frame:
                 out_path = per_frame_dir / f"frame_{k:04d}.npz"
                 payload = {
@@ -227,8 +231,10 @@ class BatchMeshBased(BatchBase):
         diag = BatchDiagnostics(
             info={
                 "stage": "batch_mesh_based",
-                "n_frames": len(per_frame),
+                "n_frames": int(n_processed),
                 "warm_start_from_previous": self.config.warm_start_from_previous,
+                "keep_results": keep_results,
+                "save_per_frame": save_per_frame,
             }
         )
         return BatchResult(results=per_frame, diagnostics=diag)
