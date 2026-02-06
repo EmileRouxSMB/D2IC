@@ -41,6 +41,8 @@ from .app_utils import (
     imread_gray,
     downsample_image,
 )
+from .config import SequenceConfig, load_sequence_config
+from .pipelines import run_sequence_from_config
 
 __all__ = [
     "Array",
@@ -78,4 +80,7 @@ __all__ = [
     "prepare_image",
     "imread_gray",
     "downsample_image",
+    "SequenceConfig",
+    "load_sequence_config",
+    "run_sequence_from_config",
 ]

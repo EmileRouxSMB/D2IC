@@ -1,0 +1,41 @@
+[paths]
+img_dir = "../../doc/img/PlateHole"
+ref_image_name = "ohtcfrp_00.tif"
+mask_filename = "roi.tif"
+image_pattern = "ohtcfrp_*.tif"
+out_dir = "../../_outputs/sequence_platehole"
+
+[mesh]
+element_size_px = 15.0
+remove_islands = true
+min_island_area_px = 64
+
+[dic]
+max_iters = 400
+tol = 1e-2
+reg_strength = 1e-2
+local_sweeps = 3
+use_velocity = true
+strain_gauge_length = 80.0
+interpolation = "cubic"
+verbose = true
+image_binning = 1
+
+[output]
+export_png = true
+plot_fields = ["u1", "u2", "e11", "e22", "e12"]
+plot_include_discrepancy = false
+plot_cmap = "jet"
+plot_alpha = 0.6
+plot_mesh = true
+plot_dpi = 200
+plot_binning = 1
+plot_projection = "fast"
+save_npz = true
+save_mesh = true
+
+[runtime]
+jax_preferred = "cpu"
+jax_fallback = "cpu"
+jax_enable_x64 = false
+jax_matmul_precision = "default"

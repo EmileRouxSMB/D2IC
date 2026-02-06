@@ -1,7 +1,9 @@
 {
   "backend": "gpu",
   "status": "ok",
-  "frames": 11,
+  "frames_total": 11,
+  "frames_measured": 10,
+  "dummy_frame": true,
   "cpu": {
     "model": "x86_64",
     "cores": 10,
@@ -12,8 +14,11 @@
     "device_name": "NVIDIA RTX 2000 Ada Generation Laptop GPU"
   },
   "indicators": {
-    "prep_s": 43.845450480999716,
-    "per_frame_s": 0.39929997500009695,
-    "total_s": 48.23776560599981
+    "pixel_assets_build_s": 1.1281778959964868,
+    "cg_compile_s": 1.6203796839981806,
+    "local_compile_s": 0.8703667070003576,
+    "prep_s": 5.543950737002888,
+    "dic_solve_s": 0.1715766547000385,
+    "total_s": 10.032812499004649
   }
 }

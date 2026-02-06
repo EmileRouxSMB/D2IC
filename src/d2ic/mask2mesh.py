@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from typing import Tuple, Sequence
-import os
-import tempfile
+from dataclasses import replace
+from typing import Tuple, Any
 
 import numpy as np
 
@@ -21,6 +19,8 @@ except Exception:  # pragma: no cover
     _ARRAY_LIB = np
 
 from .mesh_assets import Mesh, MeshAssets, compute_element_centers, make_mesh_assets
+
+Array = Any
 
 
 def downsample_mask(mask: np.ndarray, binning: int) -> np.ndarray:
@@ -188,6 +188,7 @@ def mask_to_mesh_gmsh(
     binning: int = 1,
     origin_xy: Tuple[float, float] = (0.0, 0.0),
     contour_step_px: float = 2.0,
+    simplify_tolerance_px: float | None = None,
     optimize: bool = True,
     verbose: bool = False,
     remove_islands: bool = True,
@@ -197,8 +198,13 @@ def mask_to_mesh_gmsh(
     Generate a quadrilateral mesh with Gmsh from a binary ROI mask.
 
     Parameters mirror :func:`mask_to_mesh`, but the meshing is performed via the
-    Gmsh Python API followed by a ``meshio`` import. This provides more robust
-    boundaries for complex ROIs than the grid-based mesher.
+    Gmsh Python API. This provides more robust boundaries for complex ROIs than
+    the grid-based mesher.
+    simplify_tolerance_px:
+        Optional polygon simplification tolerance (in pixel units). Larger
+        values speed up meshing by reducing contour points at the cost of
+        geometric fidelity. If None, a tolerance is derived from the contour
+        sampling step and element size.
 
     optimize:
         If True, run ``gmsh.model.mesh.optimize("Netgen")``. This can be slow on
@@ -211,15 +217,6 @@ def mask_to_mesh_gmsh(
             "Failed to import `gmsh`; ensure system libraries are present (on Ubuntu: `sudo apt-get install libglu1-mesa`). "
             "Refer to the README for installation notes."
         ) from _GMSH_IMPORT_ERROR
-
-    try:
-        import meshio  # type: ignore
-    except ImportError as exc:  # pragma: no cover
-        raise ImportError(
-            "mask_to_mesh_gmsh requires the optional `meshio` dependency. "
-            "Install with: `pip install \"D2IC[meshing]\"` (or `pip install -e \".[meshing]\"` in a repo checkout). "
-            "Refer to the README for details."
-        ) from exc
 
     import time
 
@@ -234,7 +231,14 @@ def mask_to_mesh_gmsh(
     if not np.any(mask_ds):
         raise ValueError("mask_to_mesh_gmsh: no ROI pixels remain after preprocessing.")
 
-    contours = _extract_contours(mask_ds, contour_step_px=contour_step_px, binning=binning)
+    if simplify_tolerance_px is None:
+        simplify_tolerance_px = max(1.0, 0.5 * contour_step_px, 0.25 * element_size_px)
+    contours = _extract_contours(
+        mask_ds,
+        contour_step_px=contour_step_px,
+        binning=binning,
+        simplify_tolerance_px=simplify_tolerance_px,
+    )
     if verbose:
         print(f"[mesh_gmsh] extract_contours: {(time.perf_counter() - t0):.2f}s (n={len(contours)})")
         t0 = time.perf_counter()
@@ -258,10 +262,11 @@ def mask_to_mesh_gmsh(
         )
         contours = [rect]
 
-    tmp_path = None
+    nodes_array: Array | None = None
+    elements_array: Array | None = None
     gmsh.initialize([])
     try:
-        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.option.setNumber("General.Terminal", 1 if verbose else 0)
         model_name = "mask_roi"
         gmsh.model.add(model_name)
         curve_loops: list[int] = []
@@ -287,8 +292,8 @@ def mask_to_mesh_gmsh(
                 point_tags.append(tag)
             if point_tags[0] != point_tags[-1]:
                 point_tags.append(point_tags[0])
-            spline = gmsh.model.geo.addSpline(point_tags)
-            loop = gmsh.model.geo.addCurveLoop([spline])
+            polyline = gmsh.model.geo.addPolyline(point_tags)
+            loop = gmsh.model.geo.addCurveLoop([polyline])
             if idx == 0:
                 major_loop = loop
             else:
@@ -317,30 +322,39 @@ def mask_to_mesh_gmsh(
                 print(f"[mesh_gmsh] mesh_optimize: {(time.perf_counter() - t0):.2f}s")
                 t0 = time.perf_counter()
 
-        fd, tmp_path = tempfile.mkstemp(suffix=".msh")
-        os.close(fd)
-        gmsh.write(tmp_path)
+        node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
         if verbose:
-            print(f"[mesh_gmsh] mesh_write: {(time.perf_counter() - t0):.2f}s")
+            print(f"[mesh_gmsh] mesh_get_nodes: {(time.perf_counter() - t0):.2f}s")
+            t0 = time.perf_counter()
+
+        quad_type = gmsh.model.mesh.getElementType("Quadrangle", 1)
+        _, quad_nodes = gmsh.model.mesh.getElementsByType(quad_type)
+        if verbose:
+            print(f"[mesh_gmsh] mesh_get_elements: {(time.perf_counter() - t0):.2f}s")
+
+        if len(quad_nodes) == 0:
+            raise ValueError(
+                "mask_to_mesh_gmsh: gmsh did not produce quadrilateral elements. "
+                "Ensure Mesh.RecombineAll=1 succeeds for the ROI."
+            )
+
+        node_tags_array = np.asarray(node_tags, dtype=np.int64)
+        coords = np.asarray(node_coords, dtype=np.float64).reshape(-1, 3)
+        tag_to_index = {int(tag): idx for idx, tag in enumerate(node_tags_array)}
+        elements = np.fromiter(
+            (tag_to_index[int(tag)] for tag in quad_nodes),
+            dtype=np.int32,
+            count=len(quad_nodes),
+        ).reshape(-1, 4)
+
+        nodes_array = _ARRAY_LIB.asarray(coords[:, :2])
+        elements_array = _ARRAY_LIB.asarray(elements)
     finally:
         gmsh.finalize()
 
-    try:
-        gmsh_mesh = meshio.read(tmp_path)
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.remove(tmp_path)
+    if nodes_array is None or elements_array is None:
+        raise RuntimeError("mask_to_mesh_gmsh: failed to extract mesh nodes/elements from gmsh.")
 
-    if "quad" not in gmsh_mesh.cells_dict:
-        raise ValueError(
-            "mask_to_mesh_gmsh: gmsh did not produce quadrilateral elements. "
-            "Ensure Mesh.RecombineAll=1 succeeds for the ROI."
-        )
-
-    nodes_xy = gmsh_mesh.points[:, :2]
-    elements = gmsh_mesh.cells_dict["quad"].astype(np.int32)
-    nodes_array = _ARRAY_LIB.asarray(nodes_xy)
-    elements_array = _ARRAY_LIB.asarray(elements)
     return Mesh(nodes_xy=nodes_array, elements=elements_array)
 
 
@@ -350,6 +364,7 @@ def mask_to_mesh_assets_gmsh(
     binning: int = 1,
     origin_xy: Tuple[float, float] = (0.0, 0.0),
     contour_step_px: float = 2.0,
+    simplify_tolerance_px: float | None = None,
     optimize: bool = True,
     verbose: bool = False,
     remove_islands: bool = True,
@@ -374,6 +389,7 @@ def mask_to_mesh_assets_gmsh(
         binning=binning,
         origin_xy=origin_xy,
         contour_step_px=contour_step_px,
+        simplify_tolerance_px=simplify_tolerance_px,
         optimize=optimize,
         verbose=verbose,
         remove_islands=remove_islands,
@@ -443,7 +459,12 @@ def _sanity_check_mesh(nodes: Array, elements: Array) -> None:
         raise ValueError("Element connectivity out of bounds")
 
 
-def _extract_contours(mask: np.ndarray, contour_step_px: float, binning: int) -> list[np.ndarray]:
+def _extract_contours(
+    mask: np.ndarray,
+    contour_step_px: float,
+    binning: int,
+    simplify_tolerance_px: float,
+) -> list[np.ndarray]:
     try:
         from skimage import measure  # type: ignore
     except ImportError as exc:  # pragma: no cover
@@ -455,12 +476,19 @@ def _extract_contours(mask: np.ndarray, contour_step_px: float, binning: int) ->
         return []
     stride = max(1, int(round(max(1.0, contour_step_px) / max(1, binning))))
     processed: list[np.ndarray] = []
+    tol = max(0.0, float(simplify_tolerance_px))
     for contour in contours:
         pts = contour[::stride]
         if pts.shape[0] < 4:
             continue
         # convert (row, col) -> (x, y) with scaling by binning
         xy = np.column_stack([pts[:, 1] * binning, pts[:, 0] * binning])
+        if tol > 0.0:
+            xy = measure.approximate_polygon(xy, tolerance=tol)
+        if xy.shape[0] < 4:
+            continue
+        if not np.allclose(xy[0], xy[-1]):
+            xy = np.vstack([xy, xy[0]])
         processed.append(xy)
     processed.sort(key=lambda arr: abs(_signed_area(arr)), reverse=True)
     return processed

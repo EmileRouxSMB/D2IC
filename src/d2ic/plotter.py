@@ -501,7 +501,7 @@ class DICPlotter:
         return PolyCollection(
             verts,
             facecolors="none",
-            edgecolors="k",
+            edgecolors="red",
             linewidths=0.5,
         )
 

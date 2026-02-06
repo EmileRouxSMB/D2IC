@@ -122,6 +122,52 @@ class LocalGaussNewtonSolver(SolverBase):
         )
         self._compiled = True
 
+    def warmup(self, state: Any) -> None:
+        """Compile the JIT once using dummy inputs that match the real shapes."""
+        if not self._compiled or self._solve_jit is None:
+            raise RuntimeError("LocalGaussNewtonSolver.compile() must be called before warmup().")
+
+        assets: MeshAssets = state.assets
+        pix: PixelAssets = assets.pixel_data  # type: ignore[assignment]
+        if pix is None:
+            raise ValueError("MeshAssets must provide pixel_data for LocalGaussNewtonSolver warmup.")
+
+        ref_im = state.ref_image
+        im1_T = jnp.transpose(ref_im, (1, 0))
+        im2_T = im1_T
+
+        nodes_xy_device = getattr(state, "nodes_xy_device", None)
+        if nodes_xy_device is None:
+            nodes_xy_device = jnp.asarray(assets.mesh.nodes_xy)
+        disp0 = jnp.zeros_like(nodes_xy_device)
+
+        gradx2_T = jnp.zeros_like(im2_T)
+        grady2_T = jnp.zeros_like(im2_T)
+
+        self._solve_jit.lower(
+            disp0,
+            im1_T,
+            im2_T,
+            pix.pixel_coords_ref,
+            pix.pixel_nodes,
+            pix.pixel_shapeN,
+            pix.node_pixel_index,
+            pix.node_N_weight,
+            pix.node_pixel_degree,
+            pix.node_neighbor_index,
+            pix.node_neighbor_degree,
+            pix.node_neighbor_weight,
+            pix.node_reg_weight,
+            gradx2_T,
+            grady2_T,
+            float(self._lam),
+            float(self._max_step),
+            float(state.config.reg_strength),
+            float(self._omega),
+            int(state.config.max_iters),
+            self._interpolation,
+        ).compile()
+
     def solve(self, state: Any, def_image: Array) -> LocalGNResult:
         if not self._compiled or self._solve_jit is None:
             raise RuntimeError("LocalGaussNewtonSolver.compile() must be called before solve().")

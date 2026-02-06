@@ -13,8 +13,9 @@ The codebase ships a single API: the `d2ic` package (mesh/asset layer, solvers, 
 
 
 ## Repository layout
-- `d2ic/`: package (mask2mesh, batch runner, solvers, strain).
-- `doc/`: scripted tutorials + notebooks.
+- `src/d2ic/`: package (mask2mesh, batch runner, solvers, strain).
+- `examples/`: scripted tutorials + configs.
+- `doc/`: notebooks and legacy scripts.
 - `doc/img/`: small demo datasets shipped with the repo (Sample3, PlateHole, butterFly, ...).
 - `scripte/`: autonomous scripts (e.g., CPU vs GPU benchmark).
 
@@ -27,6 +28,7 @@ source .venv/bin/activate  # on Windows: .\.venv\Scripts\activate
 pip install --upgrade pip
 pip install -e .
 ```
+Examples and scripts assume the package is installed (editable install recommended for local development).
 
 ### GPU support (optional)
 If you want CUDA/accelerator support, install the JAX wheel matching your CUDA toolkit *before* installing D²IC:
@@ -60,7 +62,11 @@ See the tutorials in `doc/` for end-to-end examples.
 ## Tutorials & scripts
 ### Sequential DIC tutorial (PlateHole / butterFly)
 ```bash
-python doc/03_0_tutorial_sequentialDIC.py
+python examples/03_0_tutorial_sequentialDIC.py
+```
+Or via the CLI:
+```bash
+d2ic run-sequence --config examples/configs/sequential_dic.toml
 ```
 Step-by-step processing of a sequence: ROI meshing via `mask_to_mesh_assets`, sequential displacement estimation with warm-start propagation, strain extraction, and figure/NPZ exports.
 

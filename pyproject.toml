@@ -22,5 +22,12 @@ dependencies = [
   "meshio",
 ]
 
+[project.scripts]
+d2ic = "d2ic.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
 [tool.setuptools.packages.find]
+where = ["src"]
 include = ["d2ic*"]

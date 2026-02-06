@@ -108,6 +108,32 @@ def imread_gray(path: Path) -> np.ndarray:
     raise RuntimeError(f"Could not read image {path} with the available backends.")
 
 
+def make_roi_mask(mask_image: np.ndarray, *, threshold: float = 0.5) -> np.ndarray:
+    """
+    Convert a grayscale mask image to a boolean ROI mask.
+
+    For binary masks (two unique values), the brighter value is treated as ROI,
+    with an auto-inversion when the ROI would cover nearly the full image.
+    """
+    data = np.asarray(mask_image)
+    if data.dtype == bool:
+        mask = data
+        return mask
+    flat = data.ravel()
+    if flat.size == 0:
+        return data.astype(bool)
+    unique = np.unique(flat)
+    if unique.size <= 2:
+        dark_val = unique.min()
+        bright_val = unique.max()
+        mask = data == bright_val
+        coverage = float(np.mean(mask))
+        if coverage > 0.95 and dark_val != bright_val:
+            mask = data == dark_val
+        return mask
+    return data > threshold
+
+
 def downsample_image(image: np.ndarray, binning: int) -> np.ndarray:
     """
     Downsample a 2D image by integer binning using block averaging.
