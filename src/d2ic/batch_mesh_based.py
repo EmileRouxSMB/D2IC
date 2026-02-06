@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence, Optional, Iterable
+import time
 
 import numpy as np
 import jax.numpy as jnp
@@ -54,12 +55,28 @@ class BatchMeshBased(BatchBase):
         self._state = BatchState(ref_image=ref_image, assets=assets, is_prepared=False)
 
     def before(self, images: Sequence[Array]) -> None:
+        verbose = bool(getattr(self.config, "verbose", False))
+        progress = bool(getattr(self.config, "progress", False))
+        if verbose or progress:
+            print("[Warmup] Preparing global solver (compile + warmup)...")
+        t0 = time.perf_counter()
         # Prepare mesh-based DIC pipeline
         self.dic_mesh.prepare(self.ref_image, self.assets)
+        if verbose or progress:
+            print("[Warmup] Global solver ready.")
+        if verbose:
+            print(f"[Warmup] Global solver time: {time.perf_counter() - t0:.2f}s")
 
         # Prepare local refinement pipeline if provided
         if self.dic_local is not None:
+            if verbose or progress:
+                print("[Warmup] Preparing local solver (compile + warmup)...")
+            t0 = time.perf_counter()
             self.dic_local.prepare(self.ref_image, self.assets)
+            if verbose or progress:
+                print("[Warmup] Local solver ready.")
+            if verbose:
+                print(f"[Warmup] Local solver time: {time.perf_counter() - t0:.2f}s")
 
         self._state.is_prepared = True
 
@@ -146,6 +163,7 @@ class BatchMeshBased(BatchBase):
                     print(f"[Batch] Frame {k + 1}: start")
                 else:
                     print(f"[Batch] Frame {k + 1}/{n_frames}: start")
+            t_frame = time.perf_counter() if verbose else None
             if self.propagator is not None:
                 u_warm = self.propagator.propagate(u_prev=u_prev, u_prevprev=u_prevprev)
                 if verbose:
@@ -199,6 +217,8 @@ class BatchMeshBased(BatchBase):
                     print(f"[Batch] Frame {k + 1}: done")
                 else:
                     print(f"[Batch] Frame {k + 1}/{n_frames}: done")
+            if t_frame is not None:
+                print(f"[Batch] Frame {k + 1}: time {time.perf_counter() - t_frame:.2f}s")
 
             if export_png:
                 should_export = export_frames is None or k in export_frames

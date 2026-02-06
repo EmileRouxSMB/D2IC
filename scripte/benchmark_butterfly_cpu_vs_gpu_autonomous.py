@@ -124,7 +124,7 @@ def run_backend_benchmark(backend: str) -> Dict[str, Any]:
         PreviousDisplacementPropagator,
         ConstantVelocityPropagator,
     )
-    from d2ic.app_utils import prepare_image, imread_gray, list_deformed_images
+    from d2ic.app_utils import prepare_image, imread_gray, list_deformed_images, make_roi_mask
     from d2ic.mesh_assets import make_mesh_assets
     from d2ic.pixel_assets import build_pixel_assets
 
@@ -147,7 +147,8 @@ def run_backend_benchmark(backend: str) -> Dict[str, Any]:
 
     im_ref = prepare_image(ref_path, binning=IMAGE_BINNING)
     images_def = [prepare_image(p, binning=IMAGE_BINNING) for p in frames]
-    mask = imread_gray(mask_path) > 0.5
+    mask_image = imread_gray(mask_path)
+    mask = make_roi_mask(mask_image)
 
     try:
         mesh, assets = mask_to_mesh_assets_gmsh(
