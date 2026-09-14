@@ -125,8 +125,8 @@ def run_backend_benchmark(backend: str) -> Dict[str, Any]:
         ConstantVelocityPropagator,
     )
     from d2ic.app_utils import prepare_image, imread_gray, list_deformed_images, make_roi_mask
-    from d2ic.mesh_assets import make_mesh_assets
-    from d2ic.pixel_assets import build_pixel_assets
+    from d2ic.mesh import make_mesh_assets
+    from d2ic.mesh import build_pixel_assets
 
     cpu_info = collect_cpu_info()
     gpu_info = collect_gpu_info(jax)
@@ -228,7 +228,6 @@ def run_backend_benchmark(backend: str) -> Dict[str, Any]:
         compute_discrepancy_map=False,
     )
     dic = DICMeshBased(
-        mesh=mesh,
         solver=GlobalCGSolver(interpolation=INTERPOLATION, verbose=False),
         config=mesh_cfg,
     )
@@ -249,7 +248,7 @@ def run_backend_benchmark(backend: str) -> Dict[str, Any]:
             omega=LOCAL_OMEGA,
             interpolation=INTERPOLATION,
         )
-        dic_local = DICMeshBased(mesh=mesh, solver=local_solver, config=local_cfg)
+        dic_local = DICMeshBased(solver=local_solver, config=local_cfg)
 
     propagator = ConstantVelocityPropagator() if USE_VELOCITY else PreviousDisplacementPropagator()
 

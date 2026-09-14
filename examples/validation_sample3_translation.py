@@ -28,7 +28,7 @@ from d2ic import (
     mask_to_mesh_assets,
     mask_to_mesh_assets_gmsh,
 )
-from d2ic.mesh_assets import make_mesh_assets
+from d2ic.mesh import make_mesh_assets
 
 # Non-interactive backend so the plot is saved even on headless systems.
 matplotlib.use("Agg")
@@ -49,12 +49,16 @@ plt.rcParams.update(
 )
 
 
-ROOT = Path(__file__).resolve().parent
-IMG_DIR = ROOT / "img" / "Sample3"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+EXAMPLE_DIR = Path(__file__).resolve().parent
+IMG_DIR = PROJECT_ROOT / "doc" / "img" / "Sample3"
 REF_IMAGE_NAME = "Sample3 Reference.tif"
 MASK_FILENAME = "roi.tif"
 IMAGE_PATTERN = "Sample3-*.tif"
-OUT_DIR = ROOT / "_outputs" / "validation_sample3"
+OUTPUT_DIR = EXAMPLE_DIR / "outputs" / "validation_sample3_translation"
+PNG_DIR = OUTPUT_DIR / "png"
+NPZ_DIR = OUTPUT_DIR / "npz"
+PARAVIEW_DIR = OUTPUT_DIR / "paraview"
 MESH_ELEMENT_SIZE_PX = 20.0
 max_iters = 400
 tol = 1e-3
@@ -100,9 +104,13 @@ def _load_mask(path: Path) -> np.ndarray:
     return mask > 0
 
 
-def _solve_sequence(im_ref: np.ndarray, images_def: List[np.ndarray]) -> np.ndarray:
+def _solve_sequence(
+    im_ref: np.ndarray,
+    images_def: List[np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Run DIC sequentially with zero initial guess and no refinements."""
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    for output_dir in (PNG_DIR, NPZ_DIR, PARAVIEW_DIR):
+        output_dir.mkdir(parents=True, exist_ok=True)
     mask_path = IMG_DIR / MASK_FILENAME
     if not mask_path.exists():
         raise FileNotFoundError(f"Mask image not found: {mask_path}")
@@ -148,13 +156,22 @@ def _solve_sequence(im_ref: np.ndarray, images_def: List[np.ndarray]) -> np.ndar
         reg_strength=reg_strength,
     )
     dic_mesh = DICMeshBased(
-        mesh=mesh,
         solver=GlobalCGSolver(interpolation=INTERPOLATION),
         config=mesh_cfg,
     )
     batch_cfg = BatchConfig(
         use_init_motion=False,
         warm_start_from_previous=True,
+        save_per_frame=True,
+        per_frame_dir=str(NPZ_DIR / "frames"),
+        export_png=True,
+        png_dir=str(PNG_DIR / "fields"),
+        plot_fields=("u1", "u2", "e11", "e22", "e12"),
+        plot_mesh=True,
+        plot_dpi=200,
+        export_vtu=True,
+        vtu_dir=str(PARAVIEW_DIR),
+        pvd_filename="validation_sample3_translation.pvd",
     )
     batch = BatchMeshBased(
         ref_image=im_ref,
@@ -169,8 +186,14 @@ def _solve_sequence(im_ref: np.ndarray, images_def: List[np.ndarray]) -> np.ndar
     per_frame = batch_result.results
     t_stack = time.perf_counter()
     disp_history = np.stack([np.asarray(res.u_nodal) for res in per_frame], axis=0)
+    strain_history = np.stack([np.asarray(res.strain) for res in per_frame], axis=0)
     print(f"[timing] stack_results: {(time.perf_counter() - t_stack):.2f}s")
-    return disp_history
+    return (
+        disp_history,
+        strain_history,
+        np.asarray(assets.mesh.nodes_xy),
+        np.asarray(assets.mesh.elements),
+    )
 
 
 def _plot_mean_displacements(
@@ -211,23 +234,62 @@ def _plot_mean_displacements(
     axes[-1].set_xticks(x)
     axes[-1].set_xticklabels([lbl.split()[0] for lbl in frame_labels], rotation=45, ha="right")
     fig.tight_layout()
-    fig_path = OUT_DIR / "mean_displacement_validation.png"
+    fig_path = PNG_DIR / "mean_displacement_validation.png"
     fig.savefig(fig_path, dpi=300, transparent=True, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved mean displacement plot to {fig_path}")
 
 
+def _save_validation_npz(
+    *,
+    displacement: np.ndarray,
+    strain: np.ndarray,
+    nodes_xy: np.ndarray,
+    elements: np.ndarray,
+    expected: np.ndarray,
+    mean_displacement: np.ndarray,
+    std_displacement: np.ndarray,
+    frame_paths: List[Path],
+) -> None:
+    """Save the complete validation data in one reusable compressed archive."""
+    out_path = NPZ_DIR / "validation_sample3_translation.npz"
+    np.savez_compressed(
+        out_path,
+        nodes_xy=nodes_xy,
+        elements=elements,
+        displacement=displacement,
+        strain=strain,
+        expected_displacement=expected,
+        mean_displacement=mean_displacement,
+        std_displacement=std_displacement,
+        frame_names=np.asarray([path.name for path in frame_paths]),
+        strain_shear_convention=np.asarray("tensorial_E12"),
+    )
+    print(f"Saved validation data to {out_path}")
+
+
 def main() -> None:
     im_ref, images_def, expected, frame_paths = _load_sequence()
-    disp_history = _solve_sequence(im_ref, images_def)
+    disp_history, strain_history, nodes_xy, elements = _solve_sequence(im_ref, images_def)
     mean_disp = disp_history.mean(axis=1)
     std_disp = disp_history.std(axis=1)
+    _save_validation_npz(
+        displacement=disp_history,
+        strain=strain_history,
+        nodes_xy=nodes_xy,
+        elements=elements,
+        expected=expected,
+        mean_displacement=mean_disp,
+        std_displacement=std_disp,
+        frame_paths=frame_paths,
+    )
     _plot_mean_displacements(
         mean_disp,
         std_disp,
         expected,
         [p.stem for p in frame_paths],
     )
+    print(f"All outputs are available in {OUTPUT_DIR}")
 
 
 if __name__ == "__main__":

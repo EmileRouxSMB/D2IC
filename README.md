@@ -9,15 +9,19 @@ The codebase ships a single API: the `d2ic` package (mesh/asset layer, solvers, 
 - **Reusable mesh/pixel assets**: pixel→element mapping, shape-function weights, node→pixel adjacency (CSR-like gather) and neighbor graphs to accelerate repeated solves on sequences.
 - **Initialization + sequential pipelines**: coarse translation-only initialization via ZNCC at element centers (`TranslationZNCCSolver`), optional refinement (`LocalGaussNewtonSolver`), and batch warm-start propagation (`BatchMeshBased` + propagators).
 - **Strain + uncertainty**: post-processing computes mesh strains; end-to-end differentiability enables uncertainty propagation via `jax.jvp` (see `doc/11_Advanced_Use_Uncertainty_Propagation.ipynb`).
-- **Reproducible examples**: scripts and notebooks under `doc/` reproduce validation/figures and export meshes, fields, and plots.
+- **Reproducible examples**: scripts under `examples/` and notebooks under `doc/` reproduce validation/figures and export meshes, fields, and plots.
 
 
 ## Repository layout
-- `src/d2ic/`: package (mask2mesh, batch runner, solvers, strain).
+- `src/d2ic/mesh/`: mesh data, pixel sampling and ROI meshing.
+- `src/d2ic/numerics/`: JAX identification solvers.
+- `src/d2ic/physics/`: photometric discrepancy and strain reconstruction.
+- `src/d2ic/pipelines/`: end-to-end sequence orchestration.
 - `examples/`: scripted tutorials + configs.
-- `doc/`: notebooks and legacy scripts.
+- `doc/`: notebooks and demonstration datasets.
 - `doc/img/`: small demo datasets shipped with the repo (Sample3, PlateHole, butterFly, ...).
-- `scripte/`: autonomous scripts (e.g., CPU vs GPU benchmark).
+- `benchmarks/`: reproducible CPU/GPU performance measurements.
+- `tools/`: maintenance utilities excluded from the numerical package.
 
 ## Installation
 ```bash
@@ -33,7 +37,7 @@ Examples and scripts assume the package is installed (editable install recommend
 ### GPU support (optional)
 If you want CUDA/accelerator support, install the JAX wheel matching your CUDA toolkit *before* installing D²IC:
 ```bash
-pip install "jax[cuda12]"
+pip install "jax[cuda13]"
 ```
 See the [official docs](https://jax.readthedocs.io/en/latest/installation.html) for other CUDA/cuDNN pairs.
 
@@ -57,12 +61,12 @@ sudo apt-get install -y libglu1-mesa
 5. **Run the batch**: `BatchMeshBased` orchestre l'execution par frame et la propagation du warm-start.
 6. **Post-process**: outputs contain nodal displacement and Green–Lagrange strain; export NPZ/PNGs as needed.
 
-See the tutorials in `doc/` for end-to-end examples.
+See the executable examples in `examples/` and notebooks in `doc/` for end-to-end examples.
 
 ## Tutorials & scripts
 ### Sequential DIC tutorial (PlateHole / butterFly)
 ```bash
-python examples/03_0_tutorial_sequentialDIC.py
+python examples/sequential_dic_platehole.py
 ```
 Or via the CLI:
 ```bash
@@ -72,7 +76,7 @@ Step-by-step processing of a sequence: ROI meshing via `mask_to_mesh_assets`, se
 
 ### Validation (Sample3, DIC Challenge)
 ```bash
-python doc/00_Validation_ImageSerie.py
+python examples/validation_sample3_translation.py
 ```
 Rigid-body translation validation on Sample3 with mean displacement tracking and uncertainty indicators.
 
@@ -82,10 +86,10 @@ Open `doc/11_Advanced_Use_Uncertainty_Propagation.ipynb` to reproduce the JVP-ba
 ## Benchmark CPU vs GPU (script autonome)
 To reproduce the benchmark (and regenerate `benchmark_cpu.json`, `benchmark_gpu.json`, and `benchmark_indicators.png`):
 ```bash
-python scripte/benchmark_butterfly_cpu_vs_gpu_autonomous.py
+python benchmarks/benchmark_butterfly_cpu_vs_gpu.py
 ```
 
-Resultats extraits de `scripte/benchmark_cpu.json` et `scripte/benchmark_gpu.json` (11 frames, WSL2; GPU: NVIDIA RTX 2000 Ada Generation Laptop GPU). Temps en secondes:
+Resultats extraits de `benchmarks/benchmark_cpu.json` et `benchmarks/benchmark_gpu.json` (11 frames, WSL2; GPU: NVIDIA RTX 2000 Ada Generation Laptop GPU). Temps en secondes:
 
 | Backend | Warmup/Prep (s) | DIC / frame (s) | Total (s) |
 |---|---:|---:|---:|
@@ -108,7 +112,7 @@ from d2ic import (
     GlobalCGSolver,
     BatchMeshBased,
 )
-from d2ic.mesh_assets import make_mesh_assets
+from d2ic.mesh import make_mesh_assets
 
 ref_image = ...  # numpy array (H,W)
 def_images = [...]  # list of numpy arrays
@@ -120,7 +124,7 @@ assets = make_mesh_assets(mesh, with_neighbors=True)
 mesh_cfg = MeshDICConfig(max_iters=200, tol=1e-3, reg_strength=0.1)
 batch_cfg = BatchConfig()
 
-dic_mesh = DICMeshBased(mesh=mesh, solver=GlobalCGSolver(), config=mesh_cfg)
+dic_mesh = DICMeshBased(solver=GlobalCGSolver(), config=mesh_cfg)
 
 batch = BatchMeshBased(
     ref_image=ref_image,

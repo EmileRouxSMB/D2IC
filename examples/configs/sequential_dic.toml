@@ -3,7 +3,7 @@ img_dir = "../../doc/img/PlateHole"
 ref_image_name = "ohtcfrp_00.tif"
 mask_filename = "roi.tif"
 image_pattern = "ohtcfrp_*.tif"
-out_dir = "../../_outputs/sequence_platehole"
+out_dir = "../outputs/sequential_dic_platehole"
 
 [mesh]
 element_size_px = 15.0
@@ -23,9 +23,13 @@ image_binning = 1
 
 [output]
 export_png = true
+# Write one VTU per frame and a dic_sequence.pvd time collection for ParaView.
+export_vtu = true
+# Write a separate synchronized image PVD, allowing an independent colormap.
+export_vtk_images = true
 plot_fields = ["u1", "u2", "e11", "e22", "e12"]
-plot_include_discrepancy = false
-plot_cmap = "jet"
+plot_include_discrepancy = true
+plot_cmap = "RdBu_r"
 plot_alpha = 0.6
 plot_mesh = true
 plot_dpi = 200
