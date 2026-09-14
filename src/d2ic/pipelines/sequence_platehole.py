@@ -11,17 +11,16 @@ try:  # optional mesh writer
 except Exception:  # pragma: no cover
     meshio = None
 
-from ..app_utils import configure_jax_platform, imread_gray, list_deformed_images, prepare_image, make_roi_mask
-from ..batch_mesh_based import BatchMeshBased
-from ..config import load_sequence_config
-from ..dataclasses import BatchConfig, MeshDICConfig
-from ..dic_mesh_based import DICMeshBased
-from ..mesh_assets import make_mesh_assets
-from ..mask2mesh import mask_to_mesh_assets, mask_to_mesh_assets_gmsh
-from ..propagator_constant_velocity import ConstantVelocityPropagator
-from ..propagator_previous import PreviousDisplacementPropagator
-from ..solver_global_cg import GlobalCGSolver
-from ..solver_local_gn import LocalGaussNewtonSolver
+from ..io.app_utils import configure_jax_platform, imread_gray, list_deformed_images, prepare_image, make_roi_mask
+from ..batch.mesh_based import BatchMeshBased
+from ..io.config import load_sequence_config
+from ..core.dataclasses import BatchConfig, MeshDICConfig
+from ..methods.mesh_based import DICMeshBased
+from ..mesh.generation import mask_to_mesh_assets_gmsh
+from ..propagation.constant_velocity import ConstantVelocityPropagator
+from ..propagation.previous import PreviousDisplacementPropagator
+from ..numerics.global_cg import GlobalCGSolver
+from ..numerics.local_gauss_newton import LocalGaussNewtonSolver
 
 
 def run_sequence_from_config(cfg_path: Path) -> None:
@@ -37,8 +36,14 @@ def run_sequence_from_config(cfg_path: Path) -> None:
 
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
     png_dir = cfg.out_dir / "png"
+    npz_dir = cfg.out_dir / "npz"
+    paraview_dir = cfg.out_dir / "paraview"
     if cfg.export_png:
         png_dir.mkdir(parents=True, exist_ok=True)
+    if cfg.save_npz:
+        npz_dir.mkdir(parents=True, exist_ok=True)
+    if cfg.export_vtu or cfg.save_mesh:
+        paraview_dir.mkdir(parents=True, exist_ok=True)
 
     ref_path = cfg.img_dir / cfg.ref_image_name
     mask_path = cfg.img_dir / cfg.mask_filename
@@ -95,22 +100,17 @@ def run_sequence_from_config(cfg_path: Path) -> None:
             optimize=cfg.mesh_gmsh_optimize,
             verbose=cfg.mesh_gmsh_verbose or cfg.verbose,
         )
-        print("Generated mesh via Gmsh-based pipeline.")
     except Exception as exc:
-        print(f"Gmsh meshing failed ({exc}); falling back to structured grid mesher.")
-        mesh, _ = mask_to_mesh_assets(
-            mask=mask,
-            element_size_px=cfg.mesh_element_size_px,
-            binning=cfg.image_binning,
-            remove_islands=cfg.mesh_remove_islands,
-            min_island_area_px=cfg.mesh_min_island_area_px,
-        )
-        assets = make_mesh_assets(mesh, with_neighbors=True)
+        raise RuntimeError(
+            "Gmsh mesh generation is required by the sequential DIC pipeline; "
+            "no fallback mesh was generated."
+        ) from exc
+    print("Generated mesh via Gmsh-based pipeline.")
     _log_elapsed(cfg, "Mesh generation", t0)
     _log_verbose(cfg, f"[Mesh] nodes: {len(mesh.nodes_xy)}, elements: {len(mesh.elements)}")
 
     if cfg.save_mesh:
-        _export_mesh(cfg.out_dir, assets.mesh.nodes_xy, assets.mesh.elements)
+        _export_mesh(paraview_dir, assets.mesh.nodes_xy, assets.mesh.elements)
     overlay_dir = png_dir if cfg.export_png else cfg.out_dir
     overlay_path = overlay_dir / "mesh_overlay.png"
     try:
@@ -129,7 +129,6 @@ def run_sequence_from_config(cfg_path: Path) -> None:
     )
 
     dic_mesh = DICMeshBased(
-        mesh=mesh,
         solver=GlobalCGSolver(interpolation=cfg.interpolation, verbose=cfg.verbose),
         config=mesh_cfg,
     )
@@ -141,6 +140,11 @@ def run_sequence_from_config(cfg_path: Path) -> None:
         progress=True,
         keep_results=cfg.keep_results,
         export_png=cfg.export_png,
+        export_vtu=cfg.export_vtu,
+        export_vtk_images=cfg.export_vtk_images,
+        vtu_dir=str(paraview_dir),
+        pvd_filename="sequential_dic_platehole.pvd",
+        image_pvd_filename="sequential_dic_platehole_images.pvd",
         export_frames=cfg.export_frames,
         png_dir=str(png_dir),
         plot_fields=cfg.plot_fields,
@@ -151,7 +155,8 @@ def run_sequence_from_config(cfg_path: Path) -> None:
         plot_dpi=cfg.plot_dpi,
         plot_binning=cfg.plot_binning,
         plot_projection=cfg.plot_projection,
-        save_per_frame=True,
+        save_per_frame=cfg.save_npz,
+        per_frame_dir=str(npz_dir / "frames"),
     )
 
     propagator = ConstantVelocityPropagator() if cfg.use_velocity else PreviousDisplacementPropagator()
@@ -171,7 +176,7 @@ def run_sequence_from_config(cfg_path: Path) -> None:
             omega=0.5,
             interpolation=cfg.interpolation,
         )
-        dic_local = DICMeshBased(mesh=mesh, solver=local_solver, config=local_cfg)
+        dic_local = DICMeshBased(solver=local_solver, config=local_cfg)
 
     batch = BatchMeshBased(
         ref_image=ref_image,
@@ -200,14 +205,19 @@ def run_sequence_from_config(cfg_path: Path) -> None:
 
         payload = {
             "nodes_xy": nodes_xy,
+            "elements": np.asarray(assets.mesh.elements),
             "u_nodal": u_stack,
             "strain": strain_stack,
+            "roi_mask": np.asarray(mask, dtype=bool),
+            "image_shape": np.asarray(ref_image.shape, dtype=np.int64),
+            "image_binning": np.asarray(cfg.image_binning, dtype=np.int64),
+            "strain_shear_convention": np.asarray("tensorial_E12"),
             "ref_path": str(ref_path),
-            "def_paths": [str(p) for p in def_paths],
+            "def_paths": np.asarray([str(p) for p in def_paths]),
         }
         if discrepancy_stack is not None:
             payload["discrepancy_ref"] = discrepancy_stack
-        out_path = cfg.out_dir / "fields_sequence.npz"
+        out_path = npz_dir / "fields_sequence.npz"
         np.savez_compressed(out_path, **payload)
         print(f"Saved NPZ results to {out_path}")
 
