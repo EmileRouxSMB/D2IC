@@ -5,8 +5,8 @@ matplotlib.use("Agg")
 import numpy as np
 import matplotlib.pyplot as plt
 
-from d2ic.dataclasses import DICDiagnostics, DICResult
-from d2ic.mesh_assets import Mesh
+from d2ic.dataclasses import DICDiagnostics, DICResult, MeshDICResult
+from d2ic.mesh.assets import Mesh
 from d2ic.plotter import DICPlotter
 
 
@@ -106,3 +106,38 @@ def test_plotter_plot_makes_figure_current() -> None:
     fig, ax = plotter.plot("u1")
     assert plt.gcf() is fig
     assert ax in fig.axes
+
+
+def test_dic_result_exposes_generic_displacement_and_u_nodal_alias() -> None:
+    displacement = np.zeros((4, 2), dtype=float)
+    result = DICResult(displacement=displacement, strain=None, diagnostics=DICDiagnostics())
+
+    assert result.displacement is displacement
+    assert result.u_nodal is displacement
+
+
+def test_plotter_reads_mesh_from_mesh_dic_result() -> None:
+    nodes_xy = np.array(
+        [
+            [0.5, 0.5],
+            [5.5, 0.5],
+            [5.5, 5.5],
+            [0.5, 5.5],
+        ],
+        dtype=float,
+    )
+    elements = np.array([[0, 1, 2, 3]], dtype=int)
+    mesh = Mesh(nodes_xy=nodes_xy, elements=elements)
+
+    result = MeshDICResult(
+        displacement=np.zeros((4, 2), dtype=float),
+        strain=np.zeros((4, 3), dtype=float),
+        diagnostics=DICDiagnostics(),
+        mesh=mesh,
+    )
+
+    im = np.zeros((8, 8), dtype=float)
+    plotter = DICPlotter(result=result, def_image=im, project_on_deformed=False)
+    fig, ax = plotter.plot("u1")
+    assert fig is not None
+    assert ax.get_title() == "$U_1$"

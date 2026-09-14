@@ -1,8 +1,24 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
-from d2ic.mask2mesh import mask_to_mesh
+import d2ic.mask2mesh as mask2mesh_module
+
+from d2ic.mesh.generation import mask_to_mesh
+
+
+def test_gmsh_import_failure_is_fatal(monkeypatch) -> None:
+    import_error = ModuleNotFoundError("No module named gmsh")
+    monkeypatch.setattr(mask2mesh_module, "gmsh", None)
+    monkeypatch.setattr(mask2mesh_module, "_GMSH_IMPORT_ERROR", import_error)
+
+    with pytest.raises(RuntimeError, match="Gmsh Python API is unavailable") as caught:
+        mask2mesh_module.mask_to_mesh_gmsh(
+            np.ones((8, 8), dtype=bool), element_size_px=2.0
+        )
+
+    assert caught.value.__cause__ is import_error
 
 
 def test_mask_to_mesh_filters_small_islands() -> None:

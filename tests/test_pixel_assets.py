@@ -1,6 +1,6 @@
 import numpy as np
 
-from d2ic.pixel_assets import build_pixel_to_element_mapping_numpy
+from d2ic.mesh.pixel_sampling import build_pixel_to_element_mapping_numpy
 
 
 def test_build_pixel_to_element_mapping_numpy_quads_with_chunking():

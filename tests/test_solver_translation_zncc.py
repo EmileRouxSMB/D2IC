@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from d2ic.solver_translation_zncc import _match_centers_jax
+from d2ic.numerics.translation_zncc import _match_centers_jax
 
 
 def test_match_centers_jax_static_win_search() -> None:
