@@ -10,6 +10,7 @@ __pycache__/*
 *.egg-info
 *.geo_unrolled
 _outputs*
+examples/outputs/
 resultat/*
 scripte/benchmark_cpu.json
 scripte/benchmark_gpu.json
