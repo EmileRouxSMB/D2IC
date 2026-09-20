@@ -96,6 +96,7 @@ def imread_gray(path: Path) -> np.ndarray:
 
     The loader tries multiple backends (imageio, tifffile, matplotlib) and
     converts RGB/RGBA images to grayscale via channel mean.
+    Grayscale-alpha and palette-alpha inputs keep their first channel.
     """
     for loader in (_try_imageio, _try_tifffile, _try_matplotlib):
         arr = loader(path)
@@ -103,9 +104,12 @@ def imread_gray(path: Path) -> np.ndarray:
             continue
         data = np.asarray(arr)
         if data.ndim == 3:
-            if data.shape[2] == 4:  # drop alpha
-                data = data[..., :3]
-            data = data.mean(axis=2)
+            if data.shape[2] == 2:  # grayscale or palette index + alpha
+                data = data[..., 0]
+            else:
+                if data.shape[2] == 4:  # drop alpha
+                    data = data[..., :3]
+                data = data.mean(axis=2)
         return data.astype(np.float32, copy=False)
     raise RuntimeError(f"Could not read image {path} with the available backends.")
 

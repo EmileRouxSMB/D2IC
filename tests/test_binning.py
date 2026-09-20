@@ -43,3 +43,17 @@ def test_binning_rejects_non_positive_factor(factor: int) -> None:
     with pytest.raises(ValueError, match=">= 1"):
         bin_image(np.ones((2, 2)), factor)
 
+
+def test_imread_gray_ignores_alpha_channel(monkeypatch, tmp_path):
+    """Opaque black pixels must remain black in grayscale+alpha images."""
+    from d2ic.io import app_utils
+
+    gray_alpha = np.array([[[0, 255], [255, 255]]], dtype=np.uint8)
+    monkeypatch.setattr(app_utils, "_try_imageio", lambda path: gray_alpha)
+    monkeypatch.setattr(app_utils, "_try_tifffile", lambda path: None)
+    monkeypatch.setattr(app_utils, "_try_matplotlib", lambda path: None)
+
+    gray = app_utils.imread_gray(tmp_path / "roi.tif")
+
+    np.testing.assert_array_equal(gray, np.array([[0.0, 255.0]], dtype=np.float32))
+    np.testing.assert_array_equal(app_utils.make_roi_mask(gray), [[False, True]])
