@@ -36,6 +36,7 @@ def write_constitutive_vtu(
     converged: np.ndarray,
     residual: np.ndarray,
     gauss_weights: np.ndarray,
+    equivalent_stress: np.ndarray | None = None,
     internal_force: np.ndarray | None = None,
     equilibrium_residual: np.ndarray | None = None,
 ) -> Path:
@@ -58,7 +59,16 @@ def write_constitutive_vtu(
     if weights.shape[0] != ne:
         raise ValueError("gauss_weights must have one row per element.")
 
+    cauchy_stress = np.asarray(cauchy_stress)
     stress = _weighted_cell_average(cauchy_stress, weights)
+    if equivalent_stress is None:
+        equivalent_stress = np.sqrt(
+            cauchy_stress[..., 0, 0] ** 2
+            - cauchy_stress[..., 0, 0] * cauchy_stress[..., 1, 1]
+            + cauchy_stress[..., 1, 1] ** 2
+            + 3.0 * cauchy_stress[..., 0, 1] ** 2
+        )
+    equivalent_stress = _weighted_cell_average(equivalent_stress, weights)
     eqps = _weighted_cell_average(equivalent_plastic_strain, weights)
     thickness = _weighted_cell_average(thickness_ratio, weights)
     residual_max = np.max(np.asarray(residual), axis=1)
@@ -76,17 +86,31 @@ def write_constitutive_vtu(
         "Displacement": displacement_3d,
         "Deformed_position": points + displacement_3d,
     }
-    for name, values in (("Internal_force", internal_force), ("Equilibrium_residual", equilibrium_residual)):
-        if values is not None:
-            values = np.asarray(values)
-            if values.shape != displacement.shape:
-                raise ValueError(f"{name} must have shape {displacement.shape}; got {values.shape}.")
-            point_data[name] = np.column_stack((values, zero_node))
+    if internal_force is not None:
+        internal_force = np.asarray(internal_force)
+        if internal_force.shape != displacement.shape:
+            raise ValueError(
+                f"internal_force must have shape {displacement.shape}; got {internal_force.shape}."
+            )
+        internal_force_3d = np.column_stack((internal_force, zero_node))
+        point_data.update(
+            {
+                "Nodal_internal_force": internal_force_3d,
+            }
+        )
+    if equilibrium_residual is not None:
+        equilibrium_residual = np.asarray(equilibrium_residual)
+        if equilibrium_residual.shape != displacement.shape:
+            raise ValueError(
+                "equilibrium_residual must have shape "
+                f"{displacement.shape}; got {equilibrium_residual.shape}."
+            )
+        point_data["Equilibrium_residual"] = np.column_stack(
+            (equilibrium_residual, zero_node)
+        )
     cell_fields: Mapping[str, np.ndarray] = {
         "Cauchy_stress": stress_tensor,
-        "S11": stress[:, 0, 0],
-        "S22": stress[:, 1, 1],
-        "S12": stress[:, 0, 1],
+        "Equivalent_stress": equivalent_stress,
         "Equivalent_plastic_strain": eqps,
         "Thickness_ratio": thickness,
         "Converged": converged_cell,
@@ -111,6 +135,8 @@ def write_constitutive_sequence(
     gauss_weights: np.ndarray,
     *,
     pvd_filename: str = "constitutive_sequence.pvd",
+    vtu_prefix: str = "constitutive",
+    time_values: np.ndarray | None = None,
 ) -> Path:
     """Write synchronized constitutive VTU frames and their PVD collection."""
     output_dir = Path(output_dir)
@@ -124,10 +150,16 @@ def write_constitutive_sequence(
     n_frames = int(np.asarray(fields["cauchy_stress"]).shape[0])
     if np.asarray(displacement_history).shape[0] != n_frames:
         raise ValueError("displacement_history and constitutive fields must have the same frame count.")
+    if time_values is None:
+        time_values = np.arange(n_frames, dtype=float)
+    else:
+        time_values = np.asarray(time_values, dtype=float)
+        if time_values.shape != (n_frames,):
+            raise ValueError("time_values must have one value per frame.")
 
     datasets = []
     for frame in range(n_frames):
-        vtu_path = output_dir / f"constitutive_{frame:04d}.vtu"
+        vtu_path = output_dir / f"{vtu_prefix}_{frame:04d}.vtu"
         write_constitutive_vtu(
             vtu_path, mesh, np.asarray(displacement_history)[frame],
             cauchy_stress=np.asarray(fields["cauchy_stress"])[frame],
@@ -136,8 +168,9 @@ def write_constitutive_sequence(
             converged=np.asarray(fields["converged"])[frame],
             residual=np.asarray(fields["residual"])[frame],
             gauss_weights=gauss_weights,
+            equivalent_stress=None if "equivalent_stress" not in fields else np.asarray(fields["equivalent_stress"])[frame],
             internal_force=None if "internal_force" not in fields else np.asarray(fields["internal_force"])[frame],
             equilibrium_residual=None if "equilibrium_residual" not in fields else np.asarray(fields["equilibrium_residual"])[frame],
         )
-        datasets.append((float(frame), vtu_path))
+        datasets.append((float(time_values[frame]), vtu_path))
     return write_pvd(output_dir / pvd_filename, datasets)

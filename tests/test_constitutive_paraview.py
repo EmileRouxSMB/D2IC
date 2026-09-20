@@ -19,6 +19,7 @@ def test_constitutive_sequence_exports_synchronized_cell_fields(tmp_path) -> Non
     stress[:, :, :, 0, 0] = np.array([10.0, 20.0])[:, None, None]
     fields = {
         "cauchy_stress": stress,
+        "equivalent_stress": np.full((2, 1, 4), 17.0),
         "equivalent_plastic_strain": np.full((2, 1, 4), 0.02),
         "thickness_ratio": np.full((2, 1, 4), 0.98),
         "converged": np.ones((2, 1, 4), dtype=bool),
@@ -35,7 +36,21 @@ def test_constitutive_sequence_exports_synchronized_cell_fields(tmp_path) -> Non
         "constitutive_0000.vtu", "constitutive_0001.vtu"
     ]
     exported = meshio.read(tmp_path / "constitutive_0001.vtu")
-    np.testing.assert_allclose(exported.cell_data_dict["S11"]["quad"], 20.0)
+    assert {"S11", "S22", "S12"}.isdisjoint(exported.cell_data_dict)
+    np.testing.assert_allclose(exported.cell_data_dict["Equivalent_stress"]["quad"], 17.0)
     np.testing.assert_allclose(exported.cell_data_dict["Equivalent_plastic_strain"]["quad"], 0.02)
     assert "Displacement" in exported.point_data
-    assert {"Internal_force", "Equilibrium_residual"} <= exported.point_data.keys()
+    assert "Internal_force" not in exported.point_data
+    assert {
+        "Nodal_internal_force",
+        "Equilibrium_residual",
+    } <= exported.point_data.keys()
+    np.testing.assert_allclose(
+        exported.point_data["Nodal_internal_force"],
+        np.tile([1.0, 1.0, 0.0], (4, 1)),
+    )
+    assert {
+        "Nodal_internal_force_X",
+        "Nodal_internal_force_Y",
+        "Nodal_internal_force_magnitude",
+    }.isdisjoint(exported.point_data)
