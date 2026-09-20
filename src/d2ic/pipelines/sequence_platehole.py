@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import time
 
@@ -23,9 +24,14 @@ from ..numerics.global_cg import GlobalCGSolver
 from ..numerics.local_gauss_newton import LocalGaussNewtonSolver
 
 
-def run_sequence_from_config(cfg_path: Path) -> None:
-    """Run the sequential DIC pipeline from a TOML config file."""
+def run_sequence_from_config(
+    cfg_path: Path, *, output_dir: Path | None = None,
+    output_prefix: str | None = None, collection_dir: Path | None = None,
+) -> None:
+    """Run sequential DIC, optionally overriding its generated-output directory."""
     cfg = load_sequence_config(Path(cfg_path))
+    if output_dir is not None:
+        cfg = replace(cfg, out_dir=Path(output_dir).resolve())
 
     _configure_runtime(cfg)
     _log_verbose(cfg, f"[Config] Using config: {cfg_path}")
@@ -35,9 +41,12 @@ def run_sequence_from_config(cfg_path: Path) -> None:
     matplotlib.use("Agg")
 
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
+    structured = output_prefix is not None
+    prefix = output_prefix or "frame"
+    collection_dir = cfg.out_dir if collection_dir is None else Path(collection_dir).resolve()
     png_dir = cfg.out_dir / "png"
-    npz_dir = cfg.out_dir / "npz"
-    paraview_dir = cfg.out_dir / "paraview"
+    npz_dir = cfg.out_dir if structured else cfg.out_dir / "npz"
+    paraview_dir = cfg.out_dir if structured else cfg.out_dir / "paraview"
     if cfg.export_png:
         png_dir.mkdir(parents=True, exist_ok=True)
     if cfg.save_npz:
@@ -52,7 +61,13 @@ def run_sequence_from_config(cfg_path: Path) -> None:
     if not mask_path.exists():
         raise FileNotFoundError(f"Mask image not found: {mask_path}")
 
-    def_paths = list_deformed_images(cfg.img_dir, cfg.image_pattern, exclude_name=cfg.ref_image_name)
+    sequence_paths = list_deformed_images(cfg.img_dir, cfg.image_pattern)
+    sampled_paths = sequence_paths[:: cfg.image_stride]
+    def_paths = [p for p in sampled_paths if p.name != cfg.ref_image_name]
+    if cfg.max_deformed_images is not None:
+        if cfg.max_deformed_images < 1:
+            raise ValueError("paths.max_deformed_images must be >= 1.")
+        def_paths = def_paths[: cfg.max_deformed_images]
     if not def_paths:
         raise RuntimeError(
             f"No deformed images found in {cfg.img_dir} with pattern '{cfg.image_pattern}'."
@@ -110,7 +125,7 @@ def run_sequence_from_config(cfg_path: Path) -> None:
     _log_verbose(cfg, f"[Mesh] nodes: {len(mesh.nodes_xy)}, elements: {len(mesh.elements)}")
 
     if cfg.save_mesh:
-        _export_mesh(paraview_dir, assets.mesh.nodes_xy, assets.mesh.elements)
+        _export_mesh(paraview_dir, assets.mesh.nodes_xy, assets.mesh.elements, filename=f"{prefix}_mesh.msh" if structured else "roi_mesh.msh")
     overlay_dir = png_dir if cfg.export_png else cfg.out_dir
     overlay_path = overlay_dir / "mesh_overlay.png"
     try:
@@ -143,8 +158,9 @@ def run_sequence_from_config(cfg_path: Path) -> None:
         export_vtu=cfg.export_vtu,
         export_vtk_images=cfg.export_vtk_images,
         vtu_dir=str(paraview_dir),
-        pvd_filename="sequential_dic_platehole.pvd",
-        image_pvd_filename="sequential_dic_platehole_images.pvd",
+        pvd_filename=str(collection_dir / f"{prefix}.pvd") if structured else "sequential_dic_platehole.pvd",
+        image_pvd_filename=str(collection_dir / f"{prefix}_images.pvd") if structured else "sequential_dic_platehole_images.pvd",
+        file_prefix=prefix,
         export_frames=cfg.export_frames,
         png_dir=str(png_dir),
         plot_fields=cfg.plot_fields,
@@ -156,7 +172,7 @@ def run_sequence_from_config(cfg_path: Path) -> None:
         plot_binning=cfg.plot_binning,
         plot_projection=cfg.plot_projection,
         save_per_frame=cfg.save_npz,
-        per_frame_dir=str(npz_dir / "frames"),
+        per_frame_dir=str(npz_dir / f"{prefix}_frames" if structured else npz_dir / "frames"),
     )
 
     propagator = ConstantVelocityPropagator() if cfg.use_velocity else PreviousDisplacementPropagator()
@@ -214,10 +230,11 @@ def run_sequence_from_config(cfg_path: Path) -> None:
             "strain_shear_convention": np.asarray("tensorial_E12"),
             "ref_path": str(ref_path),
             "def_paths": np.asarray([str(p) for p in def_paths]),
+            "image_stride": np.asarray(cfg.image_stride, dtype=np.int64),
         }
         if discrepancy_stack is not None:
             payload["discrepancy_ref"] = discrepancy_stack
-        out_path = npz_dir / "fields_sequence.npz"
+        out_path = npz_dir / (f"{prefix}_results.npz" if structured else "fields_sequence.npz")
         np.savez_compressed(out_path, **payload)
         print(f"Saved NPZ results to {out_path}")
 
@@ -265,8 +282,10 @@ def _stack_discrepancy(per_frame: list) -> np.ndarray | None:
     return None
 
 
-def _export_mesh(out_dir: Path, nodes_xy: np.ndarray, elements: np.ndarray) -> None:
-    mesh_path = out_dir / "roi_mesh.msh"
+def _export_mesh(
+    out_dir: Path, nodes_xy: np.ndarray, elements: np.ndarray, *, filename: str = "roi_mesh.msh"
+) -> None:
+    mesh_path = out_dir / filename
     out_dir.mkdir(parents=True, exist_ok=True)
     points = np.column_stack([nodes_xy, np.zeros((nodes_xy.shape[0],), dtype=nodes_xy.dtype)])
     if meshio is None:

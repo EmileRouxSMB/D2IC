@@ -301,6 +301,7 @@ class BatchConfig:
     vtu_dir: Optional[str] = None
     pvd_filename: str = "dic_sequence.pvd"
     image_pvd_filename: str = "image_sequence.pvd"
+    file_prefix: str = "frame"
     export_frames: Sequence[int] | None = None
     png_dir: Optional[str] = None
     plot_fields: Sequence[str] = ("u1", "u2", "e11", "e22", "e12")

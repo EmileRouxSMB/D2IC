@@ -3,6 +3,8 @@ img_dir = "../../doc/img/PlateHole"
 ref_image_name = "ohtcfrp_00.tif"
 mask_filename = "roi.tif"
 image_pattern = "ohtcfrp_*.tif"
+# Keep one image every N files in the sorted sequence (reference included).
+image_stride = 1
 out_dir = "../outputs/sequential_dic_platehole"
 
 [mesh]

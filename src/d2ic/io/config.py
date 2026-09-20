@@ -15,6 +15,8 @@ class SequenceConfig:
     ref_image_name: str
     mask_filename: str
     image_pattern: str
+    image_stride: int
+    max_deformed_images: int | None
     out_dir: Path
 
     mesh_element_size_px: float
@@ -89,11 +91,17 @@ def load_sequence_config(cfg_path: Path) -> SequenceConfig:
     if image_binning < 1:
         raise ValueError("dic.image_binning must be >= 1.")
 
+    image_stride = int(paths.get("image_stride", 1))
+    if image_stride < 1:
+        raise ValueError("paths.image_stride must be >= 1.")
+
     return SequenceConfig(
         img_dir=img_dir,
         ref_image_name=_require_str(paths, "ref_image_name"),
         mask_filename=_require_str(paths, "mask_filename"),
         image_pattern=_require_str(paths, "image_pattern"),
+        image_stride=image_stride,
+        max_deformed_images=(None if paths.get("max_deformed_images") is None else int(paths["max_deformed_images"])),
         out_dir=out_dir,
         mesh_element_size_px=float(_require_number(mesh, "element_size_px")),
         mesh_remove_islands=bool(mesh.get("remove_islands", True)),

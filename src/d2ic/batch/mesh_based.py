@@ -77,6 +77,7 @@ class BatchMeshBased(BatchBase):
             raise RuntimeError("BatchMeshBased.before() must be called before sequence().")
 
         save_per_frame = bool(getattr(self.config, "save_per_frame", False))
+        file_prefix = str(getattr(self.config, "file_prefix", "frame"))
         keep_results = bool(getattr(self.config, "keep_results", True))
         per_frame_dir = getattr(self.config, "per_frame_dir", None)
         if save_per_frame:
@@ -195,7 +196,7 @@ class BatchMeshBased(BatchBase):
             if keep_results:
                 per_frame.append(res)
             if save_per_frame:
-                out_path = per_frame_dir / f"frame_{k:04d}.npz"
+                out_path = per_frame_dir / f"{file_prefix}_{k:04d}.npz"
                 payload = {
                     "u_nodal": np.asarray(res.u_nodal),
                     "strain": np.asarray(res.strain),
@@ -212,13 +213,13 @@ class BatchMeshBased(BatchBase):
             if export_vtu:
                 from ..io.paraview import write_dic_vtu
 
-                vtu_path = vtu_dir / f"frame_{k:04d}.vtu"
+                vtu_path = vtu_dir / f"{file_prefix}_{k:04d}.vtu"
                 write_dic_vtu(vtu_path, self.assets.mesh, res)
                 vtu_datasets.append((float(k), vtu_path))
                 if export_vtk_images:
                     from ..io.paraview import write_image_vti
 
-                    image_path = vtu_dir / f"image_{k:04d}.vti"
+                    image_path = vtu_dir / f"{file_prefix}_image_{k:04d}.vti"
                     write_image_vti(image_path, np.asarray(Idef), field_name="Gray_level")
                     image_datasets.append((float(k), image_path))
                 if verbose:
@@ -239,7 +240,7 @@ class BatchMeshBased(BatchBase):
             if export_png:
                 should_export = export_frames is None or k in export_frames
                 if should_export:
-                    prefix = png_dir / f"frame_{k:04d}"
+                    prefix = png_dir / f"{file_prefix}_{k:04d}"
                     # One plotter + one figure reused across fields.
                     plotter = DICPlotter(
                         result=res,
