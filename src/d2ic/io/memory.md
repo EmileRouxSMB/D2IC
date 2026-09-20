@@ -30,11 +30,18 @@ Le déplacement est exporté comme un unique vecteur VTK 3D
 `Displacement=[Ux, Uy, 0]`. Les résultats VTU et les images VTI utilisent deux
 collections PVD distinctes partageant les mêmes temps. ParaView conserve ainsi
 une colormap, une opacité et une représentation indépendantes pour chaque source.
+La force interne assemblée aux nœuds est exportée uniquement comme le vecteur
+`Nodal_internal_force`. La contrainte de Cauchy est exportée uniquement comme le
+tenseur `Cauchy_stress`; ses composantes et les normes vectorielles sont laissées
+aux filtres de ParaView. `Equivalent_stress` contient la contrainte équivalente
+de von Mises calculée aux points de Gauss puis moyennée par élément.
 
 Le binning image moyenne les blocs complets et tronque le bord incomplet. Le
 binning de masque suit la règle FE conservative : un bloc est actif si au moins
 un pixel source est actif; les blocs de bord incomplets sont conservés.
 
 ## Points d’attention
+
+Les masques TIFF à deux canaux sont lus comme niveau/index + alpha : le canal alpha est ignoré.
 
 La configuration du backend JAX doit être faite avant les gros imports/compilations. Les fonctions I/O restent hors des kernels JAX.

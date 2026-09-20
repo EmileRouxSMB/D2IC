@@ -12,6 +12,7 @@ Orchestration de cas DIC complets à partir de configurations et d’images.
 
 Le pipeline construit obligatoirement le maillage avec Gmsh, prépare les solveurs
 puis propage le déplacement initial entre images.
+Le sous-échantillonnage est contrôlé par `paths.image_stride` et inclut la référence dans la sélection.
 
 ## Conventions
 

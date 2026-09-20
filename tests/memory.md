@@ -12,6 +12,8 @@ Tests scientifiques, compatibilité JAX et validations de séquences.
 - `test_constitutive_hill48.py` : retour implicite, contrainte plane, objectivité et différentiation.
 - `test_constitutive_paraview.py` : champs élémentaires VTU et timesteps PVD constitutifs.
 - `test_mechanics_constitutive.py` : gradient de transformation affine Q4 aux points de Gauss.
+- `test_alternating_identification.py` : champs virtuels lisses et différentiabilité du résidu faible.
+- `test_sequence_frame_limit.py` : ROI, stride et limite temporelle du workflow DP600L1 alterné.
 - `test_mechanical_equilibrium.py` : équilibre sous contrainte uniforme et traction analytique de face.
 - `test_equilibrium_constraints.py` : exclusion contrôlée des réactions inconnues du résidu.
 - `test_interpolation_boundaries.py` : interpolation rectangulaire, sorties de domaine et diagnostics device.

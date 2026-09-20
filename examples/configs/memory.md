@@ -22,3 +22,4 @@ configuration PlateHole écrit dans `../outputs/sequential_dic_platehole/`.
 ## Points d’attention
 
 Une modification de clé doit rester synchronisée avec `SequenceConfig`.
+`paths.image_stride` sous-échantillonne la séquence triée en conservant la référence (`1` conserve toutes les images).
