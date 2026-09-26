@@ -1,0 +1,9 @@
+{
+  "device": "cuda:0",
+  "pixels": 4096,
+  "nodes": 512,
+  "incidences": 16384,
+  "current_seconds": 0.2875620920021902,
+  "stable_sort_host_and_upload_seconds": 0.0026384430020698346,
+  "speedup": 108.98931368864149
+}

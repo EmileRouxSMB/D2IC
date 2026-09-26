@@ -15,6 +15,10 @@ Les champs peuvent être nodaux, définis sur points génériques ou projetés v
 
 ## Conventions
 
+Image coordinates are `(column, row)`, with rows increasing downwards.
+Matplotlib uses `origin="upper"` for both images and field overlays, matching
+the TIFF orientation without transforming displacement or strain values.
+
 Les composantes standard sont `u1`, `u2`, `e11`, `e22`, `e12`; les champs utilisateur passent par `DICResult.fields`.
 
 ## Points d’attention

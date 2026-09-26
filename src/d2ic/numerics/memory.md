@@ -33,3 +33,8 @@ linéaire ne calculent que l'intensité warpée. Les applications doivent érode
 ROI d'au moins le rayon du support bicubique pour empêcher les interpolations de
 traverser un bord de matière ou un trou du masque.
 
+
+Le CG borne chaque essai initial à 1 pixel par nœud, puis réduit le pas par
+Armijo. Un échec de recherche conserve le dernier champ accepté ; une absence
+totale de recouvrement a un coût infini. Ces choix évitent les sauts hors image
+avec les intensités TIFF 16 bits.

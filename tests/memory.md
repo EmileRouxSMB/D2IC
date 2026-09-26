@@ -9,6 +9,7 @@ Tests scientifiques, compatibilité JAX et validations de séquences.
 - `test_binning.py` : convention commune de binning des images et masques FE/GP.
 - `test_mesh_data_model.py` : invariants de topologie et compatibilité PyTree.
 - `test_strain_smoke.py` : extension homogène analytique.
+- `test_isotropic_gpu_history.py` : équivalence J2/Hill isotrope, rotations, jacobienne analytique, sensibilités implicites, identité et suffixes corrigés.
 - `test_constitutive_hill48.py` : retour implicite, contrainte plane, objectivité et différentiation.
 - `test_constitutive_paraview.py` : champs élémentaires VTU et timesteps PVD constitutifs.
 - `test_mechanics_constitutive.py` : gradient de transformation affine Q4 aux points de Gauss.
@@ -31,3 +32,6 @@ Les validations longues portent le marqueur pytest `slow`.
 ## Points d’attention
 
 `conftest.py` rend accessibles les packages locaux `d2ic` et `im_jax`.
+
+`test_global_cg_steps.py` vérifie une translation subpixel en 8/16 bits,
+la décroissance du coût et le rejet du recouvrement nul.

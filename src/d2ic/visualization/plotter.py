@@ -531,12 +531,12 @@ class DICPlotter:
             if self._fig is not None:
                 return
         fig, ax = plt.subplots(figsize=figsize)
-        ax.imshow(self._def_image, cmap="gray", origin="lower", alpha=1.0)
+        ax.imshow(self._def_image, cmap="gray", origin="upper", alpha=1.0)
         placeholder = np.zeros_like(self._def_image, dtype=float)
         overlay = ax.imshow(
             placeholder,
             cmap=cmap,
-            origin="lower",
+            origin="upper",
             alpha=image_alpha,
         )
         colorbar = fig.colorbar(overlay, ax=ax, label="")
@@ -652,12 +652,12 @@ class DICPlotter:
         """
         selected, field_map = self._resolve_field_map(field)
 
-        ax.imshow(self._def_image, cmap="gray", origin="lower", alpha=1.0)
+        ax.imshow(self._def_image, cmap="gray", origin="upper", alpha=1.0)
         placeholder = np.zeros_like(self._def_image, dtype=float)
         overlay = ax.imshow(
             placeholder,
             cmap=cmap,
-            origin="lower",
+            origin="upper",
             alpha=image_alpha,
         )
         colorbar = None

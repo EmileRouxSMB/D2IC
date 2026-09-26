@@ -16,6 +16,10 @@ Le sous-échantillonnage est contrôlé par `paths.image_stride` et inclut la r�
 
 ## Conventions
 
+Image coordinates are `(column, row)`, with rows increasing downwards.
+Matplotlib uses `origin="upper"` for both images and field overlays, matching
+the TIFF orientation without transforming displacement or strain values.
+
 Le maillage utilisé par les solveurs provient exclusivement de `MeshAssets.mesh`.
 
 ## Points d’attention

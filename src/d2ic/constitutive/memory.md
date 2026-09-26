@@ -30,3 +30,18 @@ contraintes et variables plastiques sont stockées dans les axes matière.
 Activer `jax_enable_x64` pour l'identification. La surface Hill est normalisée
 par `G+H`, comme le RMA historique. Toute nouvelle surface de charge doit être
 homogène de degré un et fournir une contrainte équivalente scalaire.
+
+## Retour isotrope optimisé
+
+`isotropic_plane_stress.py` traite J2 isotrope avec durcissement Voce ou Swift.
+Voce utilise `sigma0 + K*(1-exp(-p/eps0))`; Swift utilise la forme standard
+`K*(eps0+p)**n`. Le retour radial et sigma33=0 sont résolus ensemble en deux inconnues
+(Delta p, Delta e33), avec jacobienne analytique 2x2. Les contraintes sont
+[11,22,33,12], les déformations imposées [e11,e22,gamma12]. Le résidu est
+adimensionné par E ; Newton vise 1e-13 et le contrôle final accepte 1e-12.
+Un while_loop batched s'arrête lorsque tous les points ont convergé (30 tours
+maximum) ; une recherche de pas préserve Delta p >= 0. Les dérivées JVP/VJP
+proviennent de l'équation implicite au point convergé, pas des itérations.
+Le changement de branche élastique/plastique est non différentiable au seuil ;
+les tests de sensibilité évitent exactement ce seuil. Le solveur Hill48 général
+reste disponible et sert de référence pour les cas isotropes.

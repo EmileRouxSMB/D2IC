@@ -328,7 +328,7 @@ def _save_mesh_overlay_png(
     verts = nodes[elements] if elements.size else np.empty((0, 4, 2), dtype=float)
 
     fig, ax = plt.subplots()
-    ax.imshow(ref_image, cmap="gray", origin="lower", alpha=1.0)
+    ax.imshow(ref_image, cmap="gray", origin="upper", alpha=1.0)
     if verts.size:
         mesh_collection = PolyCollection(
             verts,

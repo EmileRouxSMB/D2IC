@@ -257,7 +257,8 @@ def J_pixelwise_core(
     valid_f = valid.astype(r.dtype)
     safe_r = jnp.where(valid, r, jnp.asarray(0.0, dtype=r.dtype))
     denom = jnp.maximum(jnp.sum(valid_f), jnp.asarray(1.0, dtype=r.dtype))
-    return 0.5 * jnp.sum(safe_r ** 2) / denom
+    energy = 0.5 * jnp.sum(safe_r ** 2) / denom
+    return jnp.where(jnp.any(valid), energy, jnp.inf)
 
 
 @jax.jit
@@ -441,13 +442,19 @@ def _cg_solve(
                 done_next = jnp.logical_or(done, satisfies)
                 return alpha_next, J_candidate_next, done_next
 
-            alpha_init = 1.0
-            alpha, J_trial, _ = jax.lax.fori_loop(
+            # Limit the first trial to one pixel per node, independently of
+            # image bit depth (the photometric gradient scales as intensity²).
+            max_direction = jnp.max(jnp.linalg.norm(direction_new, axis=1))
+            alpha_init = 1.0 / jnp.maximum(max_direction, 1.0)
+            alpha, J_trial, accepted = jax.lax.fori_loop(
                 0,
-                10,
+                24,
                 ls_body,
                 (alpha_init, J_val, jnp.bool_(False)),
             )
+            # A failed line search must never apply an untested step.
+            alpha = jnp.where(accepted, alpha, 0.0)
+            J_trial = jnp.where(accepted, J_trial, J_val)
             if verbose and log_cg:
                 jax.debug.print(
                     "CG iter {k}: J={J:.3e}, |grad|={g:.3e}, alpha={a:.3e}",
@@ -458,7 +465,7 @@ def _cg_solve(
                 )
             disp_next = disp + alpha * direction_new
             hist_upd = hist.at[k].set(jnp.asarray([J_trial, grad_norm, alpha], dtype=hist.dtype))
-            return k + 1, disp_next, direction_new, grad, jnp.bool_(False), hist_upd
+            return k + 1, disp_next, direction_new, grad, ~accepted, hist_upd
 
         return jax.lax.cond(stop, stop_branch, continue_branch, operand=None)
 
