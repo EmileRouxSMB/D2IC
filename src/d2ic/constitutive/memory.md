@@ -45,3 +45,11 @@ proviennent de l'équation implicite au point convergé, pas des itérations.
 Le changement de branche élastique/plastique est non différentiable au seuil ;
 les tests de sensibilité évitent exactement ce seuil. Le solveur Hill48 général
 reste disponible et sert de référence pour les cas isotropes.
+
+## Tabulated hardening and Abaqus validation
+
+The general Hill48 solver accepts `hardening_model="tabulated"` with an ordered
+`(n, 2)` table of `[PEEQ, yield stress]` rows. Interpolation is linear, as in
+the Job-1Elt `*Plastic` input. `integrate_history` also returns
+`plastic_strain` in the Voigt order documented above. The single-element
+regression covers all 24 load increments in JAX float64.

@@ -12,6 +12,7 @@ Projet de corrélation d’images numériques 2D différentiable avec JAX, organ
 - `src/d2ic/pipelines/` : orchestration des séquences DIC.
 - `examples/` : cas scientifiques exécutables et configurations.
 - `benchmarks/` : mesures reproductibles CPU/GPU.
+- `contrat/` : contrats courts du calcul, du design logiciel et des données.
 - `tests/` : tests unitaires et validations scientifiques.
 
 ## Concepts physiques ou numériques

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
+import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import time
 
 import matplotlib
@@ -15,7 +18,8 @@ except Exception:  # pragma: no cover
 from ..io.app_utils import configure_jax_platform, imread_gray, list_deformed_images, prepare_image, make_roi_mask
 from ..batch.mesh_based import BatchMeshBased
 from ..io.config import load_sequence_config
-from ..core.dataclasses import BatchConfig, MeshDICConfig
+from ..io.result_store import ResultStore
+from ..core.dataclasses import BatchConfig, DICResult, MeshDICConfig
 from ..methods.mesh_based import DICMeshBased
 from ..mesh.generation import mask_to_mesh_assets_gmsh
 from ..propagation.constant_velocity import ConstantVelocityPropagator
@@ -55,15 +59,21 @@ def run_sequence_from_config(
         paraview_dir.mkdir(parents=True, exist_ok=True)
 
     ref_path = cfg.img_dir / cfg.ref_image_name
-    mask_path = cfg.img_dir / cfg.mask_filename
+    mask_path = cfg.mask_path
     if not ref_path.exists():
         raise FileNotFoundError(f"Reference image not found: {ref_path}")
     if not mask_path.exists():
         raise FileNotFoundError(f"Mask image not found: {mask_path}")
 
-    sequence_paths = list_deformed_images(cfg.img_dir, cfg.image_pattern)
-    sampled_paths = sequence_paths[:: cfg.image_stride]
-    def_paths = [p for p in sampled_paths if p.name != cfg.ref_image_name]
+    if cfg.image_paths is None:
+        sequence_paths = list_deformed_images(cfg.img_dir, cfg.image_pattern)
+        sampled_paths = sequence_paths[:: cfg.image_stride]
+        def_paths = [p for p in sampled_paths if p.name != cfg.ref_image_name]
+    else:
+        def_paths = list(cfg.image_paths)
+        if any(not p.is_file() or p.resolve().parent != cfg.img_dir.resolve()
+               or p.name == cfg.ref_image_name for p in def_paths):
+            raise ValueError("paths.image_paths must contain existing deformed images in paths.img_dir.")
     if cfg.max_deformed_images is not None:
         if cfg.max_deformed_images < 1:
             raise ValueError("paths.max_deformed_images must be >= 1.")
@@ -77,12 +87,6 @@ def run_sequence_from_config(
     ref_image = prepare_image(ref_path, binning=cfg.image_binning)
     _log_elapsed(cfg, "Loaded reference image", t0)
     _log_verbose(cfg, f"[Images] ref shape: {ref_image.shape}")
-
-    t0 = time.perf_counter()
-    def_images = [prepare_image(p, binning=cfg.image_binning) for p in def_paths]
-    _log_elapsed(cfg, f"Loaded {len(def_images)} deformed images", t0)
-    if def_images:
-        _log_verbose(cfg, f"[Images] def shape: {def_images[0].shape}")
 
     t0 = time.perf_counter()
     mask_image = imread_gray(mask_path)
@@ -138,6 +142,7 @@ def run_sequence_from_config(
         max_iters=cfg.max_iters,
         tol=cfg.tol,
         reg_strength=cfg.reg_strength,
+        regularization=cfg.regularization,
         strain_gauge_length=cfg.strain_gauge_length,
         save_history=True,
         compute_discrepancy_map=(cfg.local_sweeps <= 0),
@@ -147,6 +152,11 @@ def run_sequence_from_config(
         solver=GlobalCGSolver(interpolation=cfg.interpolation, verbose=cfg.verbose),
         config=mesh_cfg,
     )
+
+    frame_times = None
+    if cfg.abaqus_comparison_enabled:
+        from ..io.abaqus_comparison import image_time_from_name
+        frame_times = tuple(image_time_from_name(path) for path in def_paths)
 
     batch_cfg = BatchConfig(
         use_init_motion=False,
@@ -160,6 +170,7 @@ def run_sequence_from_config(
         vtu_dir=str(paraview_dir),
         pvd_filename=str(collection_dir / f"{prefix}.pvd") if structured else "sequential_dic_platehole.pvd",
         image_pvd_filename=str(collection_dir / f"{prefix}_images.pvd") if structured else "sequential_dic_platehole_images.pvd",
+        frame_times=frame_times,
         file_prefix=prefix,
         export_frames=cfg.export_frames,
         png_dir=str(png_dir),
@@ -171,7 +182,7 @@ def run_sequence_from_config(
         plot_dpi=cfg.plot_dpi,
         plot_binning=cfg.plot_binning,
         plot_projection=cfg.plot_projection,
-        save_per_frame=cfg.save_npz,
+        save_per_frame=False,
         per_frame_dir=str(npz_dir / f"{prefix}_frames" if structured else npz_dir / "frames"),
     )
 
@@ -182,6 +193,7 @@ def run_sequence_from_config(
             max_iters=cfg.local_sweeps,
             tol=cfg.tol,
             reg_strength=cfg.reg_strength,
+            regularization=cfg.regularization,
             strain_gauge_length=cfg.strain_gauge_length,
             save_history=True,
             compute_discrepancy_map=cfg.plot_include_discrepancy,
@@ -194,6 +206,58 @@ def run_sequence_from_config(
         )
         dic_local = DICMeshBased(solver=local_solver, config=local_cfg)
 
+    result_store = None
+    result_fingerprint = None
+    resume_offset = 0
+    if cfg.save_npz:
+        store_dir = npz_dir / "dic_store"
+        input_records = []
+        for path in [ref_path, mask_path, *def_paths]:
+            stat = path.stat()
+            input_records.append((str(path.resolve()), stat.st_size, stat.st_mtime_ns,
+                                  _sha256_file(path)))
+        fingerprint_payload = {
+            "inputs": input_records,
+            "config": repr(cfg),
+            "mesh": repr((cfg.mesh_element_size_px, cfg.mesh_remove_islands,
+                           cfg.mesh_min_island_area_px, cfg.mesh_gmsh_contour_step_px)),
+        }
+        result_fingerprint = hashlib.sha256(
+            json.dumps(fingerprint_payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        metadata = {
+            "fingerprint": result_fingerprint,
+            "ref_path": str(ref_path),
+            "def_paths": [str(path) for path in def_paths],
+            "image_stride": cfg.image_stride,
+            "image_binning": cfg.image_binning,
+            "image_shape": list(ref_image.shape),
+            "regularization": cfg.regularization,
+            "reg_strength": cfg.reg_strength,
+            "local_sweeps": cfg.local_sweeps,
+            "time_provenance": "frame_times from configured image names" if frame_times else "frame index",
+            "frame_times": list(frame_times) if frame_times is not None else None,
+        }
+        result_store = ResultStore(store_dir, metadata=metadata)
+        result_store.write_mesh(np.asarray(assets.mesh.nodes_xy), np.asarray(assets.mesh.elements))
+        result_store.write_roi_mask(mask)
+        checkpoint = result_store.load_checkpoint(result_fingerprint)
+        if checkpoint is not None:
+            candidate = int(checkpoint["completed_frames"])
+            committed_files_exist = all(
+                (result_store.frames_path / f"frame_{k:04d}.npz").exists()
+                for k in range(candidate)
+            )
+            if committed_files_exist:
+                resume_offset = candidate
+        result_store.update_progress(status="running", total_frames=len(def_paths),
+                                     completed_frames=resume_offset,
+                                     last_frame=resume_offset - 1 if resume_offset else None)
+
+    # Decode only frames that still need solving after a verified checkpoint.
+    def_images = (prepare_image(path, binning=cfg.image_binning)
+                  for path in def_paths[resume_offset:])
+
     batch = BatchMeshBased(
         ref_image=ref_image,
         assets=assets,
@@ -201,44 +265,117 @@ def run_sequence_from_config(
         batch_config=batch_cfg,
         dic_local=dic_local,
         propagator=propagator,
+        result_store=result_store,
+        result_fingerprint=result_fingerprint,
+        frame_offset=resume_offset,
     )
 
     print("Preparing pipelines (JIT compile may take a while on first run)...")
-    print(f"Running batch on {len(def_images)} frame(s).")
+    print(f"Running batch on {len(def_paths)} frame(s).")
     t0 = time.perf_counter()
     batch_result = batch.run(def_images)
     _log_elapsed(cfg, "Batch run", t0)
     print("Batch run completed.")
 
     per_frame = batch_result.results
-    if cfg.save_npz and not cfg.keep_results:
-        print("[Output] save_npz disabled because keep_results=false (zero-accumulation mode).")
-    if cfg.save_npz and cfg.keep_results:
-        nodes_xy = np.asarray(assets.mesh.nodes_xy)
-        u_stack = np.stack([np.asarray(r.u_nodal) for r in per_frame], axis=0)
-        strain_stack = np.stack([np.asarray(r.strain) for r in per_frame], axis=0)
-        discrepancy_stack = _stack_discrepancy(per_frame)
+    if cfg.abaqus_comparison_enabled:
+        if not cfg.keep_results:
+            raise ValueError("Abaqus comparison requires output.keep_results = true.")
+        from ..io.abaqus_comparison import compare_abaqus_dic_sequence
 
-        payload = {
-            "nodes_xy": nodes_xy,
-            "elements": np.asarray(assets.mesh.elements),
-            "u_nodal": u_stack,
-            "strain": strain_stack,
-            "roi_mask": np.asarray(mask, dtype=bool),
-            "image_shape": np.asarray(ref_image.shape, dtype=np.int64),
-            "image_binning": np.asarray(cfg.image_binning, dtype=np.int64),
-            "strain_shear_convention": np.asarray("tensorial_E12"),
-            "ref_path": str(ref_path),
-            "def_paths": np.asarray([str(p) for p in def_paths]),
-            "image_stride": np.asarray(cfg.image_stride, dtype=np.int64),
-        }
-        if discrepancy_stack is not None:
-            payload["discrepancy_ref"] = discrepancy_stack
-        out_path = npz_dir / (f"{prefix}_results.npz" if structured else "fields_sequence.npz")
-        np.savez_compressed(out_path, **payload)
-        print(f"Saved NPZ results to {out_path}")
+        comparison_dir = cfg.out_dir / "abaqus_comparison"
+        comparison = compare_abaqus_dic_sequence(
+            assets.mesh, _restore_comparison_results(result_store, per_frame, resume_offset), def_paths,
+            abaqus_npz=cfg.abaqus_npz,
+            metadata_json=cfg.abaqus_metadata_json,
+            output_dir=comparison_dir,
+            vtu_dir=paraview_dir,
+            vtu_prefix=prefix,
+            pvd_path=(collection_dir / f"{prefix}.pvd") if structured else (
+                paraview_dir / "sequential_dic_platehole.pvd"
+            ),
+            image_binning=cfg.image_binning,
+            max_extrapolation_px=cfg.abaqus_max_extrapolation_px,
+        )
+        print(f"Saved Abaqus comparison JSON to {comparison['json']}")
+        print(f"Saved Abaqus comparison CSV to {comparison['csv']}")
+    if cfg.save_npz and result_store is not None:
+        if cfg.export_legacy_npz:
+            out_path = npz_dir / (f"{prefix}_results.npz" if structured else "fields_sequence.npz")
+            result_store.export_npz(out_path)
+            print(f"Saved NPZ results to {out_path}")
+        result_store.update_progress(status="completed", total_frames=len(def_paths),
+                                     completed_frames=result_store.frame_count,
+                                     last_frame=result_store.frame_count - 1 if result_store.frame_count else None)
+    elif cfg.save_npz:
+        stack_context = TemporaryDirectory(dir=npz_dir) if not cfg.keep_results else None
+        u_stack = strain_stack = discrepancy_stack = None
+        try:
+            if cfg.keep_results:
+                u_stack = np.stack([np.asarray(r.u_nodal) for r in per_frame], axis=0)
+                strain_stack = np.stack([np.asarray(r.strain) for r in per_frame], axis=0)
+                discrepancy_stack = _stack_discrepancy(per_frame)
+            else:
+                frame_dir = npz_dir / (f"{prefix}_frames" if structured else "frames")
+                frame_paths = [
+                    frame_dir / f"{prefix}_{k:04d}.npz" for k in range(len(def_paths))
+                ]
+                u_stack, strain_stack, discrepancy_stack = _stack_frame_npz(
+                    frame_paths, Path(stack_context.name)
+                )
+            payload = {
+                "nodes_xy": np.asarray(assets.mesh.nodes_xy),
+                "elements": np.asarray(assets.mesh.elements),
+                "u_nodal": u_stack,
+                "strain": strain_stack,
+                "roi_mask": np.asarray(mask, dtype=bool),
+                "image_shape": np.asarray(ref_image.shape, dtype=np.int64),
+                "image_binning": np.asarray(cfg.image_binning, dtype=np.int64),
+                "strain_shear_convention": np.asarray("tensorial_E12"),
+                "ref_path": str(ref_path),
+                "def_paths": np.asarray([str(p) for p in def_paths]),
+                "image_stride": np.asarray(cfg.image_stride, dtype=np.int64),
+                "regularization": np.asarray(cfg.regularization),
+                "reg_strength": np.asarray(cfg.reg_strength),
+                "local_sweeps": np.asarray(cfg.local_sweeps, dtype=np.int64),
+            }
+            if discrepancy_stack is not None:
+                payload["discrepancy_ref"] = discrepancy_stack
+            out_path = npz_dir / (
+                f"{prefix}_results.npz" if structured else "fields_sequence.npz"
+            )
+            np.savez_compressed(out_path, **payload)
+            print(f"Saved NPZ results to {out_path}")
+        finally:
+            if stack_context is not None:
+                for array in (u_stack, strain_stack, discrepancy_stack):
+                    if isinstance(array, np.memmap):
+                        array.flush()
+                        array._mmap.close()
+                stack_context.cleanup()
 
     _log_elapsed(cfg, "Total pipeline", t_total)
+
+
+def _restore_comparison_results(result_store: ResultStore, new_results: list,
+                                resume_offset: int) -> list[DICResult]:
+    """Rebuild only the stored nodal results needed by Abaqus comparison."""
+    if resume_offset == 0:
+        return new_results
+    previous = []
+    for index in range(resume_offset):
+        frame = result_store.read_frame(index)
+        previous.append(DICResult(displacement=frame["u_nodal"], strain=frame["strain"]))
+    return previous + new_results
+
+
+def _sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """Fingerprint source image bytes so same-size replacements invalidate resume."""
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        while chunk := stream.read(chunk_size):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _configure_runtime(cfg: object) -> None:
@@ -264,6 +401,44 @@ def _log_elapsed(cfg: object, label: str, t0: float) -> None:
     if bool(getattr(cfg, "verbose", False)):
         elapsed = time.perf_counter() - t0
         print(f"[Timing] {label}: {elapsed:.2f}s")
+
+
+def _stack_frame_npz(
+    frame_paths: list[Path], temporary_dir: Path,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """Assemble a sequence on disk from per-frame NPZ files."""
+    if not frame_paths:
+        raise ValueError("A sequence needs at least one frame.")
+    with np.load(frame_paths[0], allow_pickle=False) as first:
+        u_shape, u_dtype = first["u_nodal"].shape, first["u_nodal"].dtype
+        e_shape, e_dtype = first["strain"].shape, first["strain"].dtype
+        has_discrepancy = "discrepancy_ref" in first
+        if has_discrepancy:
+            d_shape, d_dtype = first["discrepancy_ref"].shape, first["discrepancy_ref"].dtype
+
+    count = len(frame_paths)
+    u = np.lib.format.open_memmap(
+        temporary_dir / "u_nodal.npy", mode="w+", dtype=u_dtype, shape=(count, *u_shape)
+    )
+    strain = np.lib.format.open_memmap(
+        temporary_dir / "strain.npy", mode="w+", dtype=e_dtype, shape=(count, *e_shape)
+    )
+    discrepancy = (
+        np.lib.format.open_memmap(
+            temporary_dir / "discrepancy.npy", mode="w+", dtype=d_dtype,
+            shape=(count, *d_shape),
+        )
+        if has_discrepancy else None
+    )
+    for k, path in enumerate(frame_paths):
+        with np.load(path, allow_pickle=False) as frame:
+            u[k] = frame["u_nodal"]
+            strain[k] = frame["strain"]
+            if discrepancy is not None:
+                if "discrepancy_ref" not in frame:
+                    raise ValueError(f"Missing discrepancy_ref in {path}")
+                discrepancy[k] = frame["discrepancy_ref"]
+    return u, strain, discrepancy
 
 
 def _stack_discrepancy(per_frame: list) -> np.ndarray | None:

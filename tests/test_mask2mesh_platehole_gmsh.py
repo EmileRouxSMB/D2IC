@@ -29,3 +29,4 @@ def test_mask_to_mesh_platehole_gmsh() -> None:
     assert mesh.elements.shape[0] > 0
     assert mesh.nodes_xy.shape[0] > 0
     assert assets.mesh.nodes_xy.shape == mesh.nodes_xy.shape
+    assert np.unique(np.asarray(mesh.elements)).size == len(mesh.nodes_xy)

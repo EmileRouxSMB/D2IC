@@ -4,10 +4,11 @@ from dataclasses import dataclass, replace
 import jax.numpy as jnp
 
 from ..core.dic_base import DICBase
-from ..mesh.assets import MeshAssets, PixelAssets, build_strain_neighbors
+from ..mesh.assets import MeshAssets, PixelAssets, NodePixelGather, build_strain_neighbors
 from ..core.dataclasses import MeshDICConfig, DICResult, MeshDICResult, DICDiagnostics
 from ..core.types import Array
 from ..numerics.base import SolverBase
+from ..numerics.local_gauss_newton import LocalGaussNewtonSolver
 from ..physics.strain import (
     compute_green_lagrange_strain_nodes_lsq,
     green_lagrange_to_voigt,
@@ -15,9 +16,10 @@ from ..physics.strain import (
 from ..physics.discrepancy import compute_discrepancy_map_ref
 
 try:  # pragma: no cover - optional dependency
-    from ..mesh.pixel_sampling import build_pixel_assets
+    from ..mesh.pixel_sampling import build_pixel_assets, build_node_pixel_dense
 except Exception:  # pragma: no cover
     build_pixel_assets = None
+    build_node_pixel_dense = None
 
 
 def _pixel_assets_to_device(pix: PixelAssets, device) -> PixelAssets:
@@ -67,6 +69,10 @@ class DICMeshBased(DICBase):
         _dev_attr = getattr(nodes_xy_dev, "device", None)
         target_device = _dev_attr() if callable(_dev_attr) else _dev_attr
 
+        needs_gather = (
+            isinstance(self.solver, LocalGaussNewtonSolver)
+            and self.config.regularization == "spring"
+        )
         if assets.pixel_data is None:
             if build_pixel_assets is None:
                 raise RuntimeError("Pixel asset generator is unavailable; supply MeshAssets with pixel_data.")
@@ -89,6 +95,7 @@ class DICMeshBased(DICBase):
                         ref_image=ref_image,
                         binning=1.0,
                         roi_mask=getattr(assets, "roi_mask", None),
+                        with_node_pixel_gather=needs_gather,
                     )
                 pixel_data = (
                     _pixel_assets_to_device(pixel_data_cpu, target_device)
@@ -101,8 +108,20 @@ class DICMeshBased(DICBase):
                     ref_image=ref_image,
                     binning=1.0,
                     roi_mask=getattr(assets, "roi_mask", None),
+                    with_node_pixel_gather=needs_gather,
                 )
             assets = replace(assets, pixel_data=pixel_data)
+        elif needs_gather and assets.pixel_data.node_pixel_gather is None:
+            if build_node_pixel_dense is None:
+                raise RuntimeError("Node-pixel gather builder is unavailable.")
+            pix = assets.pixel_data
+            index, weight, degree = build_node_pixel_dense(
+                pix.pixel_nodes, pix.pixel_shapeN, assets.mesh.nodes_xy.shape[0]
+            )
+            pix = replace(
+                pix, node_pixel_gather=NodePixelGather(index, weight, degree)
+            )
+            assets = replace(assets, pixel_data=pix)
 
         self._state = MeshDICState(
             ref_image=ref_image_dev,
@@ -114,6 +133,13 @@ class DICMeshBased(DICBase):
         self.solver.compile(assets)
         if hasattr(self.solver, "warmup"):
             self.solver.warmup(self._state)
+
+    @property
+    def prepared_assets(self) -> MeshAssets:
+        """Assets reused by the prepared solver and subsequent pipeline stages."""
+        if self._state is None:
+            raise RuntimeError("Call prepare() before accessing prepared_assets.")
+        return self._state.assets
 
     def set_initial_guess(self, u0_nodal: Array) -> None:
         if self._state is None:

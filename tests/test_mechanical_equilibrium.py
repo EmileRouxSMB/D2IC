@@ -35,3 +35,19 @@ def test_top_face_traction_resultant_components() -> None:
     )
     # Top outward normal is -y: width 2 * thickness 0.5.
     np.testing.assert_allclose(resultant, [-10.0, -100.0], atol=1e-12)
+
+
+def test_internal_force_is_invariant_to_image_pixel_scale() -> None:
+    """detJ [px2], gradients [px-1] and one mm/px factor give identical N."""
+    nodes = jnp.asarray([[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]])
+    elements = jnp.asarray([[0, 1, 2, 3]])
+    F = jnp.broadcast_to(jnp.eye(2), (1, 4, 2, 2))
+    stress = jnp.zeros((1, 4, 2, 2)).at[:, :, 1, 1].set(100.0)
+    force = assemble_internal_force_q4(
+        nodes, elements, F, stress, jnp.ones((1, 4)), jnp.asarray(1.0), jnp.asarray(0.2)
+    )
+    refined_force = assemble_internal_force_q4(
+        4.0 * nodes, elements, F, stress, jnp.ones((1, 4)),
+        jnp.asarray(1.0), jnp.asarray(0.05),
+    )
+    np.testing.assert_allclose(refined_force, force, rtol=1e-12, atol=1e-12)

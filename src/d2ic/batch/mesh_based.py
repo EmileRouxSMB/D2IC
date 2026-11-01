@@ -36,6 +36,9 @@ class BatchMeshBased(BatchBase):
         batch_config: BatchConfig,
         dic_local: Optional[DICMeshBased] = None,
         propagator: Optional[DisplacementPropagatorBase] = None,
+        result_store=None,
+        result_fingerprint: str | None = None,
+        frame_offset: int = 0,
     ) -> None:
         super().__init__()
         self.ref_image = ref_image
@@ -44,6 +47,9 @@ class BatchMeshBased(BatchBase):
         self.dic_local = dic_local
         self.config = batch_config
         self.propagator = propagator
+        self.result_store = result_store
+        self.result_fingerprint = result_fingerprint
+        self.frame_offset = int(frame_offset)
         self._is_prepared = False
 
     def before(self, images: Sequence[Array]) -> None:
@@ -54,6 +60,7 @@ class BatchMeshBased(BatchBase):
         t0 = time.perf_counter()
         # Prepare mesh-based DIC pipeline
         self.dic_mesh.prepare(self.ref_image, self.assets)
+        self.assets = self.dic_mesh.prepared_assets
         if verbose or progress:
             print("[Warmup] Global solver ready.")
         if verbose:
@@ -151,14 +158,36 @@ class BatchMeshBased(BatchBase):
         n_processed = 0
         u_prev = None
         u_prevprev = None
+        frame_times = getattr(self.config, "frame_times", None)
+        start_index = 0
+        if self.result_store is not None and self.result_fingerprint is not None:
+            checkpoint = self.result_store.load_checkpoint(self.result_fingerprint)
+            if checkpoint is not None and int(checkpoint["completed_frames"]) == self.frame_offset:
+                start_index = self.frame_offset
+                if start_index > 0:
+                    u_prev = jnp.asarray(checkpoint["u_prev"]) if "u_prev" in checkpoint else None
+                    u_prevprev = jnp.asarray(checkpoint["u_prevprev"]) if "u_prevprev" in checkpoint else None
+                    if verbose or progress:
+                        print(f"[Batch] Resuming after {start_index} completed frame(s).")
+                    if export_vtu:
+                        for frame_index in range(start_index):
+                            time_value = float(frame_index) if frame_times is None else float(frame_times[frame_index])
+                            old_vtu = vtu_dir / f"{file_prefix}_{frame_index:04d}.vtu"
+                            if old_vtu.exists():
+                                vtu_datasets.append((time_value, old_vtu))
+                            old_image = vtu_dir / f"{file_prefix}_image_{frame_index:04d}.vti"
+                            if export_vtk_images and old_image.exists():
+                                image_datasets.append((time_value, old_image))
 
         n_frames: int | None
         try:
-            n_frames = len(images)  # type: ignore[arg-type]
+            n_frames = len(images) + self.frame_offset  # type: ignore[arg-type]
         except TypeError:
-            n_frames = None
+            n_frames = len(frame_times) if frame_times is not None else None
+        if frame_times is not None and n_frames is not None and len(frame_times) != n_frames:
+            raise ValueError("BatchConfig.frame_times must contain one time per deformed image.")
 
-        for k, Idef in enumerate(images):
+        for k, Idef in enumerate(images, start=self.frame_offset):
             n_processed += 1
             if progress or verbose:
                 if n_frames is None:
@@ -215,13 +244,16 @@ class BatchMeshBased(BatchBase):
 
                 vtu_path = vtu_dir / f"{file_prefix}_{k:04d}.vtu"
                 write_dic_vtu(vtu_path, self.assets.mesh, res)
-                vtu_datasets.append((float(k), vtu_path))
+                time_value = float(k) if frame_times is None else float(frame_times[k])
+                vtu_datasets = [(t, p) for t, p in vtu_datasets if p != vtu_path]
+                vtu_datasets.append((time_value, vtu_path))
                 if export_vtk_images:
                     from ..io.paraview import write_image_vti
 
                     image_path = vtu_dir / f"{file_prefix}_image_{k:04d}.vti"
                     write_image_vti(image_path, np.asarray(Idef), field_name="Gray_level")
-                    image_datasets.append((float(k), image_path))
+                    image_datasets = [(t, p) for t, p in image_datasets if p != image_path]
+                    image_datasets.append((time_value, image_path))
                 if verbose:
                     print(f"  save: {vtu_path}")
 
@@ -265,6 +297,22 @@ class BatchMeshBased(BatchBase):
                     if fig is not None:
                         plt.close(fig)
 
+            if self.result_store is not None:
+                pixel_maps = getattr(res, "pixel_maps", None)
+                discrepancy = pixel_maps.get("discrepancy_ref") if isinstance(pixel_maps, dict) else None
+                self.result_store.write_frame(
+                    k, u_nodal=np.asarray(res.u_nodal), strain=np.asarray(res.strain),
+                    discrepancy_ref=None if discrepancy is None else np.asarray(discrepancy),
+                )
+                self.result_store.save_checkpoint(
+                    fingerprint=self.result_fingerprint or "",
+                    u_prev=np.asarray(u_prev),
+                    u_prevprev=None if u_prevprev is None else np.asarray(u_prevprev),
+                    completed_frames=k + 1,
+                )
+                self.result_store.update_progress(status="running", total_frames=n_frames,
+                                                  completed_frames=k + 1, last_frame=k)
+
         pvd_path = None
         if export_vtu:
             from ..io.paraview import write_pvd
@@ -292,6 +340,11 @@ class BatchMeshBased(BatchBase):
                 "pvd_path": None if pvd_path is None else str(pvd_path),
             }
         )
+        if self.result_store is not None:
+            total_done = n_processed + start_index
+            self.result_store.update_progress(status="finalizing", total_frames=n_frames,
+                                              completed_frames=total_done,
+                                              last_frame=total_done - 1 if total_done else None)
         return BatchResult(results=per_frame, diagnostics=diag)
 
     def end(self, result: BatchResult) -> BatchResult:

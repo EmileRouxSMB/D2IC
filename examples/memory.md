@@ -22,3 +22,6 @@ Les chemins sont résolus relativement aux fichiers de configuration ou à la ra
 ## Points d’attention
 
 Les exemples doivent importer l’API publique ou les sous-packages canoniques, jamais les alias plats de compatibilité.
+
+`validate_abaqus_single_element.py` compares the complete Job-1Elt Abaqus
+history to the D2IC local constitutive integrator and reports field errors.

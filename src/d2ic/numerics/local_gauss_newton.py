@@ -22,6 +22,7 @@ except Exception:  # pragma: no cover
 from .base import MeshSolverState, SolverBase
 from ..core.types import Array
 from ..mesh.assets import MeshAssets, PixelAssets
+from .global_cg import GlobalCGSolver
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,11 @@ class LocalGaussNewtonSolver(SolverBase):
         """Compile the JIT once using dummy inputs that match the real shapes."""
         if not self._compiled or self._solve_jit is None:
             raise RuntimeError("LocalGaussNewtonSolver.compile() must be called before warmup().")
+        if state.config.regularization == "elastic":
+            self._elastic_solver = GlobalCGSolver(interpolation=self._interpolation)
+            self._elastic_solver.compile(state.assets)
+            self._elastic_solver.warmup(state)
+            return
 
         assets: MeshAssets = state.assets
         pix: PixelAssets = assets.pixel_data  # type: ignore[assignment]
@@ -171,6 +177,8 @@ class LocalGaussNewtonSolver(SolverBase):
     def solve(self, state: MeshSolverState, def_image: Array) -> LocalGNResult:
         if not self._compiled or self._solve_jit is None:
             raise RuntimeError("LocalGaussNewtonSolver.compile() must be called before solve().")
+        if state.config.regularization == "elastic":
+            return self._elastic_solver.solve(state, def_image)
 
         assets: MeshAssets = state.assets
         pix: PixelAssets = assets.pixel_data  # type: ignore[assignment]

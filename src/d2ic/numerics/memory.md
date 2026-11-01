@@ -38,3 +38,13 @@ Le CG borne chaque essai initial à 1 pixel par nœud, puis réduit le pas par
 Armijo. Un échec de recherche conserve le dernier champ accepté ; une absence
 totale de recouvrement a un coût infini. Ces choix évitent les sauts hors image
 avec les intensités TIFF 16 bits.
+
+## Régularisation élastique isotrope
+
+`elastic_regularization.py` calcule les gradients Q4 à quatre points de Gauss puis
+l'énergie de Saint-Venant–Kirchhoff en déformation de Green–Lagrange. Cette
+énergie s'annule pour toute translation ou rotation rigide plane finie. Le
+rapport de Lamé correspond à un coefficient de Poisson de 0,3, avec module
+de cisaillement unitaire. `global_cg.py` étalonne son échelle sur l'ancienne
+pénalité de ressorts pour un étirement axial uniforme ; `reg_strength` reste
+un poids numérique à calibrer sur les résidus et les zones de contrôle.

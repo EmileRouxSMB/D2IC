@@ -74,6 +74,17 @@ d2ic run-sequence --config examples/configs/sequential_dic.toml
 ```
 Step-by-step processing of a sequence: ROI meshing via `mask_to_mesh_assets`, sequential displacement estimation with warm-start propagation, strain extraction, and figure/NPZ exports.
 
+The sequence TOML accepts `paths.mask_path` for a mask stored outside the image directory. A relative `mask_path` is resolved from the TOML file directory; an absolute path is used directly. The legacy `paths.mask_filename` remains supported and is resolved inside `paths.img_dir`. If both keys are present, `mask_path` takes precedence. For example:
+
+```toml
+[paths]
+img_dir = "../../images/VIS"
+ref_image_name = "VIS_000.bmp"
+image_pattern = "VIS_*.bmp"
+mask_path = "roi/mask_final.tif"
+out_dir = "runs/dic"
+```
+
 ### Validation (Sample3, DIC Challenge)
 ```bash
 python examples/validation_sample3_translation.py

@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Tuple
 
+from scipy.spatial import cKDTree
+
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -26,6 +28,7 @@ def build_pixel_assets(
     roi_mask: np.ndarray | None = None,
     bbox_pad: float = 2.0,
     chunk_size: int = 4096,
+    with_node_pixel_gather: bool = False,
 ) -> PixelSampling:
     """
     Build pixel-level assets required by mesh-based image solvers.
@@ -34,7 +37,7 @@ def build_pixel_assets(
     - samples candidate pixels in the mesh bounding box,
     - assigns each pixel to a containing element (if any),
     - computes bilinear shape functions at each retained pixel,
-    - builds node-wise gather tables for fast residual/regularization assembly.
+    - builds the regularization graph and optionally the local-solver node gather.
 
     Parameters
     ----------
@@ -50,7 +53,9 @@ def build_pixel_assets(
     bbox_pad:
         Padding (in pixel units, in the binned coordinate system) added around the mesh bounding box.
     chunk_size:
-        Chunk size used by some geometry kernels to control memory.
+        Maximum number of pixel candidates tested at once per element.
+    with_node_pixel_gather:
+        Build the dense node-to-pixel table required by the local spring solver.
 
     Returns
     -------
@@ -89,11 +94,16 @@ def build_pixel_assets(
         nodes.shape[0],
     )
     node_reg_weight = np.ones_like(np.asarray(node_neighbor_degree), dtype=nodes.dtype)
-    node_pixel_index, node_N_weight, node_degree = build_node_pixel_dense(
-        pixel_nodes,
-        pixel_shapeN,
-        nodes.shape[0],
-    )
+    node_pixel_gather = None
+    if with_node_pixel_gather:
+        node_pixel_index, node_N_weight, node_degree = build_node_pixel_dense(
+            pixel_nodes, pixel_shapeN, nodes.shape[0]
+        )
+        node_pixel_gather = NodePixelGather(
+            index=node_pixel_index,
+            shape_weight=node_N_weight,
+            degree=node_degree,
+        )
     roi_rows = np.clip(np.floor(pixel_coords[:, 1] - 0.5).astype(int), 0, H - 1)
     roi_cols = np.clip(np.floor(pixel_coords[:, 0] - 0.5).astype(int), 0, W - 1)
     roi_flat = np.ravel_multi_index((roi_rows, roi_cols), (H, W))
@@ -107,11 +117,7 @@ def build_pixel_assets(
             weight=jnp.asarray(node_neighbor_weight),
             node_weight=jnp.asarray(node_reg_weight),
         ),
-        node_pixel_gather=NodePixelGather(
-            index=jnp.asarray(node_pixel_index),
-            shape_weight=jnp.asarray(node_N_weight),
-            degree=jnp.asarray(node_degree),
-        ),
+        node_pixel_gather=node_pixel_gather,
         roi_mask_flat=jnp.asarray(roi_flat),
         image_shape=(H, W),
     )
@@ -167,79 +173,54 @@ def build_pixel_to_element_mapping_numpy(
     pixel_coords = np.asarray(pixel_coords, dtype=float)
     nodes_coord = np.asarray(nodes_coord, dtype=float)
     elements = np.asarray(elements, dtype=np.int32)
-    elements_jnp = jnp.asarray(elements)
-
     Np = int(pixel_coords.shape[0])
     Ne = int(elements.shape[0])
     if Np == 0 or Ne == 0:
         return -np.ones((Np,), dtype=int), np.zeros((Np, 4), dtype=int)
-
     if chunk_size < 1:
         raise ValueError("chunk_size must be >= 1")
 
-    quad_nodes = jnp.asarray(nodes_coord[elements])
-    edges = jnp.roll(quad_nodes, -1, axis=1) - quad_nodes  # (Ne, 4, 2)
-    bbox_min = quad_nodes.min(axis=1)  # (Ne, 2)
-    bbox_max = quad_nodes.max(axis=1)  # (Ne, 2)
-
-    quad_next = jnp.roll(quad_nodes, -1, axis=1)
-    area2 = jnp.sum(
-        quad_nodes[:, :, 0] * quad_next[:, :, 1] - quad_nodes[:, :, 1] * quad_next[:, :, 0],
-        axis=1,
-    )
-    orientation = jnp.where(area2 >= 0.0, 1.0, -1.0)  # (Ne,)
-
+    # Query only pixels near each element. Processing elements in index order
+    # preserves the previous first-containing-element rule on shared edges.
+    tree = cKDTree(pixel_coords)
+    element_ids = np.full(Np, -1, dtype=np.int32)
+    pixel_nodes = np.zeros((Np, 4), dtype=np.int32)
+    quads = nodes_coord[elements]
     tol = 1e-6
-
-    @jax.jit
-    def _assign_chunk(pix_chunk, active_mask):
-        x = pix_chunk[:, 0][:, None]
-        y = pix_chunk[:, 1][:, None]
-        mask_bbox = (
-            (x >= bbox_min[:, 0])
-            & (x <= bbox_max[:, 0])
-            & (y >= bbox_min[:, 1])
-            & (y <= bbox_max[:, 1])
-        )  # (chunk_size, Ne)
-
-        vec = pix_chunk[:, None, None, :] - quad_nodes[None, :, :, :]  # (chunk_size, Ne, 4, 2)
-        cross = edges[None, :, :, 0] * vec[:, :, :, 1] - edges[None, :, :, 1] * vec[:, :, :, 0]
-        inside = jnp.all(orientation[None, :, None] * cross >= -tol, axis=-1)  # (chunk_size, Ne)
-
-        valid = mask_bbox & inside
-        valid_any = jnp.any(valid, axis=1)
-        first_idx = jnp.argmax(valid.astype(jnp.int32), axis=1)
-        elt_idx = jnp.where(valid_any, first_idx, -1)
-        safe_idx = jnp.where(elt_idx < 0, 0, elt_idx)
-        pix_nodes = jnp.where(
-            valid_any[:, None],
-            elements_jnp[safe_idx],
-            jnp.zeros((pix_chunk.shape[0], 4), dtype=jnp.int32),
+    for elt, quad in enumerate(quads):
+        lo = quad.min(axis=0)
+        hi = quad.max(axis=0)
+        center = 0.5 * (lo + hi)
+        radius = float(np.max(hi - lo) * 0.5 + 1e-12)
+        candidates = tree.query_ball_point(center, radius, p=np.inf)
+        if not candidates:
+            continue
+        candidates = np.asarray(candidates, dtype=np.intp)
+        candidates = candidates[element_ids[candidates] < 0]
+        edges = np.roll(quad, -1, axis=0) - quad
+        area2 = np.sum(
+            quad[:, 0] * np.roll(quad[:, 1], -1)
+            - quad[:, 1] * np.roll(quad[:, 0], -1)
         )
-
-        elt_idx = jnp.where(active_mask, elt_idx, -1)
-        pix_nodes = jnp.where(active_mask[:, None], pix_nodes, 0)
-        return elt_idx, pix_nodes
-
-    pixel_elts = []
-    pixel_nodes = []
-    for start in range(0, Np, chunk_size):
-        end = min(start + chunk_size, Np)
-        cur = end - start
-        chunk = pixel_coords[start:end]
-        if cur < chunk_size:
-            pad = np.zeros((chunk_size - cur, 2), dtype=chunk.dtype)
-            chunk = np.vstack([chunk, pad])
-            active = np.zeros((chunk_size,), dtype=bool)
-            active[:cur] = True
-        else:
-            active = np.ones((chunk_size,), dtype=bool)
-
-        elts_chunk, nodes_chunk = _assign_chunk(jnp.asarray(chunk), jnp.asarray(active))
-        pixel_elts.append(np.asarray(elts_chunk)[:cur])
-        pixel_nodes.append(np.asarray(nodes_chunk)[:cur])
-
-    return np.concatenate(pixel_elts, axis=0), np.vstack(pixel_nodes)
+        orientation = 1.0 if area2 >= 0 else -1.0
+        for first in range(0, candidates.size, chunk_size):
+            ids = candidates[first:first + chunk_size]
+            points = pixel_coords[ids]
+            in_bbox = np.all((points >= lo) & (points <= hi), axis=1)
+            if not np.any(in_bbox):
+                continue
+            ids = ids[in_bbox]
+            points = points[in_bbox]
+            vectors = points[:, None, :] - quad[None, :, :]
+            cross = (
+                edges[None, :, 0] * vectors[:, :, 1]
+                - edges[None, :, 1] * vectors[:, :, 0]
+            )
+            inside = np.all(orientation * cross >= -tol, axis=1)
+            matched = ids[inside]
+            element_ids[matched] = elt
+            pixel_nodes[matched] = elements[elt]
+    return element_ids, pixel_nodes
 
 
 @jax.jit
@@ -479,56 +460,24 @@ def build_node_pixel_dense(pixel_nodes, pixel_shapeN, n_nodes):
     (node_pixel_index, node_N_weight, node_degree):
         Dense gather indices and weights suitable for JAX kernels.
     """
-    pixel_nodes_np = np.asarray(pixel_nodes, dtype=int)
+    pixel_nodes_np = np.asarray(pixel_nodes, dtype=np.int32)
+    weights = np.asarray(pixel_shapeN)
     n_nodes = int(n_nodes)
-    if pixel_nodes_np.size == 0:
-        node_pixel_index = jnp.full((n_nodes, 0), -1, dtype=jnp.int32)
-        node_N_weight = jnp.zeros((n_nodes, 0), dtype=jnp.asarray(pixel_shapeN).dtype)
-        node_degree = jnp.zeros((n_nodes,), dtype=jnp.int32)
-        return node_pixel_index, node_N_weight, node_degree
-
     flat_nodes = pixel_nodes_np.reshape(-1)
-    degrees = np.bincount(flat_nodes, minlength=n_nodes)
-    max_deg = int(degrees.max(initial=0))
-    if max_deg == 0:
-        node_pixel_index = jnp.full((n_nodes, 0), -1, dtype=jnp.int32)
-        node_N_weight = jnp.zeros((n_nodes, 0), dtype=jnp.asarray(pixel_shapeN).dtype)
-        node_degree = jnp.zeros((n_nodes,), dtype=jnp.int32)
-        return node_pixel_index, node_N_weight, node_degree
-    return _build_node_pixel_dense_jax(
-        pixel_nodes,
-        pixel_shapeN,
-        n_nodes,
-        max_deg,
-    )
-
-
-@partial(jax.jit, static_argnums=(2, 3))
-def _build_node_pixel_dense_jax(pixel_nodes, pixel_shapeN, n_nodes, max_deg):
-    pixel_nodes = jnp.asarray(pixel_nodes, dtype=jnp.int32)
-    pixel_shapeN = jnp.asarray(pixel_shapeN)
-    n_nodes = int(n_nodes)
-    max_deg = int(max_deg)
-    Np = pixel_nodes.shape[0]
-    n_local = pixel_nodes.shape[1]
-    flat_nodes = pixel_nodes.reshape(-1)
-    flat_weights = pixel_shapeN.reshape(-1)
-    pixel_ids = jnp.repeat(jnp.arange(Np, dtype=jnp.int32), n_local)
-
-    def body(counts, node):
-        idx = counts[node]
-        counts = counts.at[node].add(1)
-        return counts, idx
-
-    counts0 = jnp.zeros((n_nodes,), dtype=jnp.int32)
-    node_degree, slot_idx = lax.scan(body, counts0, flat_nodes)
-
-    node_pixel_index = jnp.full((n_nodes, max_deg), -1, dtype=jnp.int32)
-    node_N_weight = jnp.zeros((n_nodes, max_deg), dtype=pixel_shapeN.dtype)
-    node_pixel_index = node_pixel_index.at[flat_nodes, slot_idx].set(pixel_ids)
-    node_N_weight = node_N_weight.at[flat_nodes, slot_idx].set(flat_weights)
-
-    return node_pixel_index, node_N_weight, node_degree
+    degree = np.bincount(flat_nodes, minlength=n_nodes).astype(np.int32)
+    max_degree = int(degree.max(initial=0))
+    index = np.full((n_nodes, max_degree), -1, dtype=np.int32)
+    shape_weight = np.zeros((n_nodes, max_degree), dtype=weights.dtype)
+    if flat_nodes.size:
+        # Stable order matches the old scan's pixel-major insertion order.
+        order = np.argsort(flat_nodes, kind="stable")
+        sorted_nodes = flat_nodes[order]
+        starts = np.cumsum(degree, dtype=np.int64) - degree
+        slots = np.arange(order.size) - starts[sorted_nodes]
+        pixel_ids = order // pixel_nodes_np.shape[1]
+        index[sorted_nodes, slots] = pixel_ids
+        shape_weight[sorted_nodes, slots] = weights.reshape(-1)[order]
+    return jnp.asarray(index), jnp.asarray(shape_weight), jnp.asarray(degree)
 
 
 def points_in_convex_quad(points, quad_nodes, chunk_size=4096, tol=1e-6):

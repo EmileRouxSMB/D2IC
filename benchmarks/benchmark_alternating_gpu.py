@@ -84,8 +84,6 @@ def run(args):
     measures=detJ*weights*.1
     F=gradients_from_displacement(U,elements,gradients)
     de,Q=prepare_history(F,args.substeps)
-    basis=jnp.asarray(a.correction_basis(np.asarray(nodes),2,3))
-    n_modes=len(basis)
     states,base_fields=integrate_prepared(de,Q,theta)
     base_forces=forces_from_fields(F[1:],base_fields['cauchy_stress'],base_fields['thickness_ratio'],
                                   elements,gradients,measures,nodes)
@@ -105,8 +103,8 @@ def run(args):
         fields=integrate_prepared(de,Q,theta)[1]
         return fields['cauchy_stress'], jnp.all(fields['converged'])
 
-    def coefficient_cost(coefficients, theta, suffix=False):
-        trial=U.at[frame].add(jnp.einsum('k,kni->ni',coefficients,basis))
+    def nodal_cost(delta_u, theta, suffix=False):
+        trial=U.at[frame].add(delta_u)
         trial_F=gradients_from_displacement(trial,elements,gradients)
         trial_de,trial_Q=prepare_history(trial_F,args.substeps)
         _,fields=integrate_prepared(trial_de,trial_Q,theta,
@@ -117,7 +115,7 @@ def run(args):
             forces=jnp.where((jnp.arange(args.frames)>=frame-1)[:,None,None],forces,base_forces)
         return .5*jnp.mean((forces/100.)**2)
 
-    zero=jnp.zeros(n_modes)
+    zero=jnp.zeros_like(nodes)
     results={}
     results['general_hill48'],legacy_stress=measure(legacy,(F,theta),args.repeats)
     print('reference material',results['general_hill48']['median_seconds'],flush=True)
@@ -130,21 +128,25 @@ def run(args):
     results['material_speedup']=results['general_hill48']['median_seconds']/results['isotropic_implicit']['median_seconds']
     results['preparation_reuse_speedup']=results['isotropic_implicit']['median_seconds']/results['prepared_kinematics']['median_seconds']
 
-    full=lambda c,theta:coefficient_cost(c,theta,False)
-    suffix=lambda c,theta:coefficient_cost(c,theta,True)
+    full=lambda delta,theta:nodal_cost(delta,theta,False)
+    suffix=lambda delta,theta:nodal_cost(delta,theta,True)
     results['implicit_full_gradient'],full_g=measure(jax.value_and_grad(full),(zero,theta),args.repeats)
     results['implicit_suffix_gradient'],suffix_g=measure(jax.value_and_grad(suffix),(zero,theta),args.repeats)
     results['suffix_gradient_max_error']=float(jnp.max(jnp.abs(full_g[1]-suffix_g[1])))
     results['suffix_speedup']=results['implicit_full_gradient']['median_seconds']/results['implicit_suffix_gradient']['median_seconds']
 
     step=1e-3
-    directions=jnp.eye(n_modes)*step
+    direction_count=min(18,nodes.size)
+    directions=(jnp.eye(nodes.size,dtype=nodes.dtype)[:direction_count]*step).reshape(
+        (direction_count,)+nodes.shape
+    )
     def finite_difference(theta):
         def pair(delta):
             return (full(delta,theta)-full(-delta,theta))/(2*step)
         return jax.lax.map(pair,directions,batch_size=2)
     results['finite_difference_gradient'],fd=measure(finite_difference,(theta,),args.repeats)
-    results['gradient_relative_error']=float(jnp.linalg.norm(fd-full_g[1])/jnp.maximum(jnp.linalg.norm(fd),1e-30))
+    projected_gradient=jax.vmap(lambda direction:jnp.vdot(full_g[1],direction/step))(directions)
+    results['gradient_relative_error']=float(jnp.linalg.norm(fd-projected_gradient)/jnp.maximum(jnp.linalg.norm(fd),1e-30))
     results['implicit_derivative_speedup']=results['finite_difference_gradient']['median_seconds']/results['implicit_full_gradient']['median_seconds']
 
     # Tangent tests for the actual three-parameter fitting path.
@@ -188,11 +190,12 @@ def run(args):
         devices=[str(device) for device in jax.devices()],device_kind=jax.devices()[0].device_kind,
         platform=jax.devices()[0].platform,x64=jax.config.x64_enabled)
     results['case']=dict(frames=args.frames,elements=len(elements),gauss_points=4,
-        substeps=args.substeps,modes=n_modes,suffix_first_frame=frame,repeats=args.repeats,
+        substeps=args.substeps,nodal_dofs=int(nodes.size),fd_directions=direction_count,
+        suffix_first_frame=frame,repeats=args.repeats,
         baseline='general Hill48 on identical objective substep path',
         timing='separate compilation, warmup, synchronized median',
         memory='XLA compiled buffer estimates; not whole-process peak VRAM',
-        gradient_objective='0.5 * mean((nodal_force / 100 N)**2), 18 affine/Gaussian modes',
+        gradient_objective='0.5 * mean((nodal_force / 100 N)**2), all nodal DOFs',
         parameter_jacobian='all Cauchy stress components versus 3 material parameters',
         photo_case='65000 fixed random samples, reproducible random 1920x1200 image')
     args.output.parent.mkdir(parents=True,exist_ok=True)

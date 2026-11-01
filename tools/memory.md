@@ -19,3 +19,6 @@ Les outils peuvent dépendre de bibliothèques optionnelles et ne sont pas impor
 ## Points d’attention
 
 Ne pas déplacer de logique numérique ou physique dans ce dossier.
+
+`export_abaqus_single_element.py` runs with Abaqus Python 2.7 and exports
+ODB fields plus the INP `*Plastic` table to a compact JSON reference.

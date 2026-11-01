@@ -1,4 +1,4 @@
-"""Compare equivalent node-pixel gathers: serial GPU scan versus host stable sort."""
+"""Check and time the current stable-sort node-pixel gather."""
 import json
 import time
 import jax
@@ -37,8 +37,7 @@ def run():
         return float(np.median(samples))
     result = dict(device=str(jax.devices()[0]), pixels=p, nodes=n, incidences=p*4,
                   current_seconds=timing(lambda: build_node_pixel_dense(ids, jnp.asarray(weights), n)),
-                  stable_sort_host_and_upload_seconds=timing(sorted_host))
-    result['speedup'] = result['current_seconds'] / result['stable_sort_host_and_upload_seconds']
+                  reference_seconds=timing(sorted_host))
     return result
 
 if __name__ == '__main__':

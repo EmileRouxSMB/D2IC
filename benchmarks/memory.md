@@ -46,3 +46,6 @@ régularisation et non-finis sur CPU/CUDA (observations, pas tests d’acceptati
 `audit_dic_preparation.py` compare le scan pixel-nœud au tri stable hôte, avec
 vérification des tables et synchronisation des mesures. Les JSON `audit_dic_*`
 conservent les observations ; aucune extrapolation au temps global.
+
+`abaqus_single_element_validation.md` documents the Abaqus 2022 Job-1Elt
+constitutive comparison, field errors and the observed nodal-force convention.

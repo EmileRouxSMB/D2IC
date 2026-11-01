@@ -48,8 +48,10 @@ class MeshDICConfig:
         Convergence tolerance on the solver stopping criterion (implementation-defined,
         e.g., relative update norm or residual norm).
     reg_strength:
-        Regularization weight applied to the displacement field (0 disables
-        regularization).
+        Weight of the selected displacement regularization (0 disables it).
+    regularization:
+        "elastic" (default): isotropic Green–Lagrange membrane energy on Q4 elements.
+        "spring": legacy graph penalty on differences between nodal displacements.
     strain_gauge_length:
         Characteristic length scale (in mesh units) used by strain post-processing
         or smoothing. Set to ``0`` to disable length-based smoothing.
@@ -66,6 +68,7 @@ class MeshDICConfig:
     max_iters: int = 50
     tol: float = 1e-6
     reg_strength: float = 0.0
+    regularization: str = "elastic"
     strain_gauge_length: float = 0.0
     strain_eps: float = 1e-8
     save_history: bool = True
@@ -257,6 +260,8 @@ class BatchConfig:
         ``_outputs/paraview``.
     pvd_filename:
         Name of the PVD collection file.
+    frame_times:
+        Optional physical times used for both mesh and image PVD collections.
     export_frames:
         Optional list/sequence of frame indices to export. If ``None``, export
         all frames when ``export_png`` is enabled.
@@ -301,6 +306,7 @@ class BatchConfig:
     vtu_dir: Optional[str] = None
     pvd_filename: str = "dic_sequence.pvd"
     image_pvd_filename: str = "image_sequence.pvd"
+    frame_times: Sequence[float] | None = None
     file_prefix: str = "frame"
     export_frames: Sequence[int] | None = None
     png_dir: Optional[str] = None

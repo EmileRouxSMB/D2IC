@@ -12,11 +12,11 @@ Traitement séquentiel de séries d’images et gestion des sorties par frame.
 
 ## Concepts physiques ou numériques
 
-Le batch garde l’image de référence et les assets constants, puis corrèle chaque image déformée. Les champs précédents peuvent initialiser la frame suivante.
+Le batch garde l’image de référence et les assets constants, puis accepte un itérable d’images déformées lues au fil de l’eau. Les champs précédents peuvent initialiser la frame suivante.
 
 ## Conventions
 
-Les résultats par frame sont des `DICResult`. Les exports hôte (`npz`, figures, VTU/PVD) restent en dehors des fonctions jittées. Le VTU porte les déplacements et déformations aux nœuds; le PVD ordonne les frames par indice temporel.
+Les résultats par frame sont des `DICResult`. Les exports hôte (`npz`, figures, VTU/PVD) restent en dehors des fonctions jittées. Le magasin de résultats écrit chaque frame après ses exports image/VTU/PNG, puis checkpoint et progression. Il restaure les deux champs de déplacement seulement après validation du fingerprint et du maillage. Le VTU porte les déplacements et déformations aux nœuds; le PVD ordonne les frames par indice temporel.
 
 ## Points d’attention
 

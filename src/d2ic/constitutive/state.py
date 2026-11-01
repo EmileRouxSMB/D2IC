@@ -13,7 +13,8 @@ class Hill48Material:
     """Parameters of an isotropic-elastic, Hill48 plastic metal.
 
     ``hill`` contains ``[F, G, H, L, M, N]``. ``hardening`` contains
-    ``[sigma0, K, eps0, exponent]``; the last entry is unused for Voce.
+    ``[sigma0, K, eps0, exponent]`` for Voce/Swift, or rows
+    ``[equivalent plastic strain, yield stress]`` for tabulated hardening.
     """
 
     young: Array

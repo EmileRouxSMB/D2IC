@@ -1,5 +1,9 @@
 # Optimisation de l’identification alternée — mesures du 25 septembre 2026
 
+> Rapport historique de l’ancienne version à 18 modes. Le solveur courant optimise
+> directement tous les déplacements nodaux par Gauss--Newton/CG ; ces mesures ne
+> décrivent donc plus son paramétrage ni ses performances.
+
 Les six axes sont implémentés dans `IdentVirual/alternating_identification.py`,
 `constitutive/isotropic_plane_stress.py` et `mechanics/isotropic_history.py`.
 Le solveur Hill48 général reste disponible comme référence indépendante.

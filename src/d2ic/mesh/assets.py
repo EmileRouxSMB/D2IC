@@ -64,7 +64,7 @@ class PixelSampling:
     pixel_nodes: Array
     pixel_shapeN: Array
     regularization_graph: WeightedNeighborTable
-    node_pixel_gather: NodePixelGather
+    node_pixel_gather: Optional[NodePixelGather]
     roi_mask_flat: Array
     image_shape: tuple[int, int]
 
@@ -86,14 +86,20 @@ class PixelSampling:
 
     @property
     def node_pixel_index(self) -> Array:
+        if self.node_pixel_gather is None:
+            raise ValueError("Node-pixel gather was not requested for this sampling.")
         return self.node_pixel_gather.index
 
     @property
     def node_N_weight(self) -> Array:
+        if self.node_pixel_gather is None:
+            raise ValueError("Node-pixel gather was not requested for this sampling.")
         return self.node_pixel_gather.shape_weight
 
     @property
     def node_pixel_degree(self) -> Array:
+        if self.node_pixel_gather is None:
+            raise ValueError("Node-pixel gather was not requested for this sampling.")
         return self.node_pixel_gather.degree
 
 

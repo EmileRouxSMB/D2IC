@@ -54,12 +54,13 @@ def polar_log(delta):
 
 
 @partial(jax.jit, static_argnames=('substeps',))
-def prepare_history(F, substeps=1):
+def prepare_history(F, substeps=1, initial_orientation=None):
     """Prepare material strain increments and orientations (T,S,Ne,Ng,...).
 
     Interpolate each relative gradient as R(alpha) exp(alpha log U). This
     preserves pure rotations. Intermediate history is an assumed path, not
-    additional measured data. Reference F[0] is the identity.
+    additional measured data. An optional initial orientation permits an
+    isolated increment to continue the same material frame as a full history.
     """
     delta = F[1:] @ inverse_2x2(F[:-1])
     angle, logU = polar_log(delta)
@@ -78,7 +79,9 @@ def prepare_history(F, substeps=1):
         return (new_F, new_orientation), (de, new_orientation)
 
     shape = F.shape[1:3]
-    _, (de, rotations) = jax.lax.scan(step, (F[0], jnp.broadcast_to(jnp.eye(2), shape + (2, 2))), refined)
+    if initial_orientation is None:
+        initial_orientation = jnp.broadcast_to(jnp.eye(2), shape + (2, 2))
+    _, (de, rotations) = jax.lax.scan(step, (F[0], initial_orientation), refined)
     de = de.reshape((F.shape[0]-1, substeps) + shape + (3,))
     rotations = rotations.reshape((F.shape[0]-1, substeps) + shape + (2, 2))
     return de, rotations

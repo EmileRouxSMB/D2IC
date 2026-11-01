@@ -61,6 +61,15 @@ from .io import (
     write_image_vti,
     write_pvd,
     prepare_image,
+    AbaqusInterpolationMap,
+    abaqus_displacement_to_image_px,
+    build_abaqus_interpolation_map,
+    compare_abaqus_dic_sequence,
+    connected_node_mask,
+    image_nodes_to_abaqus_mm,
+    image_time_from_name,
+    interpolate_abaqus_space,
+    interpolate_abaqus_time,
 )
 from .pipelines import run_sequence_from_config
 
@@ -177,4 +186,13 @@ __all__ = [
     "write_dic_vtu",
     "write_image_vti",
     "write_pvd",
+    "AbaqusInterpolationMap",
+    "abaqus_displacement_to_image_px",
+    "build_abaqus_interpolation_map",
+    "compare_abaqus_dic_sequence",
+    "connected_node_mask",
+    "image_nodes_to_abaqus_mm",
+    "image_time_from_name",
+    "interpolate_abaqus_space",
+    "interpolate_abaqus_time",
 ]

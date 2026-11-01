@@ -21,6 +21,7 @@ except Exception:  # pragma: no cover
 from .base import MeshSolverState, SolverBase
 from ..core.types import Array
 from ..mesh.assets import MeshAssets, PixelAssets
+from .elastic_regularization import elastic_energy, q4_reference_gradients
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,21 @@ class GlobalCGSolver(SolverBase):
         if pixel_data is None:
             raise ValueError("MeshAssets must provide pixel_data for GlobalCGSolver.")
 
+        self._elements = jnp.asarray(assets.mesh.elements)
+        self._elastic_grad, self._elastic_weight = q4_reference_gradients(
+            assets.mesh.nodes_xy, assets.mesh.elements
+        )
+        nodes = np.asarray(assets.mesh.nodes_xy)
+        # Match the old spring penalty for a unit axial stretch.
+        graph = pixel_data.regularization_graph
+        idx = np.asarray(graph.index)
+        degree = np.asarray(graph.degree)
+        weight = np.asarray(graph.weight)
+        valid = np.arange(idx.shape[1])[None, :] < degree[:, None]
+        delta = nodes[:, None, :] - nodes[np.where(valid, idx, 0)]
+        edge_length_sq = np.sum(delta * delta, axis=-1)
+        self._elastic_scale = float(0.125 * np.sum(np.where(valid, weight * edge_length_sq, 0.0)) / 1.75)
+
         def _cg_fn(
             disp0,
             im1_T,
@@ -83,6 +99,7 @@ class GlobalCGSolver(SolverBase):
             interpolation,
             verbose,
             log_cg,
+            regularization,
         ):
             return _cg_solve(
                 disp0,
@@ -101,11 +118,16 @@ class GlobalCGSolver(SolverBase):
                 interpolation,
                 verbose,
                 log_cg,
+                self._elements,
+                self._elastic_grad,
+                self._elastic_weight,
+                self._elastic_scale,
+                regularization,
             )
 
         self._solve_jit = jax.jit(
             _cg_fn,
-            static_argnums=(11, 12, 13, 14, 15),
+            static_argnums=(11, 12, 13, 14, 15, 16),
             donate_argnums=(0,),
         )
         self._compiled = True
@@ -145,6 +167,7 @@ class GlobalCGSolver(SolverBase):
             self._interpolation,
             bool(self._verbose),
             bool(self._log_cg),
+            state.config.regularization,
         ).compile()
 
     def solve(self, state: MeshSolverState, def_image: Array) -> GlobalCGResult:
@@ -185,6 +208,7 @@ class GlobalCGSolver(SolverBase):
             self._interpolation,
             bool(self._verbose),
             bool(self._log_cg),
+            state.config.regularization,
         )
 
         strain = jnp.zeros_like(disp_sol)
@@ -302,6 +326,11 @@ def J_total(
     node_reg_weight,
     interpolation,
     alpha_reg,
+    elements=None,
+    elastic_grad=None,
+    elastic_weight=None,
+    elastic_scale=1.0,
+    regularization="spring",
 ):
     J_img = J_pixelwise_core(
         displacement,
@@ -313,14 +342,16 @@ def J_total(
         interpolation=interpolation,
     )
     alpha_reg = jnp.asarray(alpha_reg, dtype=J_img.dtype)
-    reg = reg_energy_spring_global(
-        displacement,
-        node_neighbor_index,
-        node_neighbor_degree,
-        node_neighbor_weight,
-        node_reg_weight,
-    ).astype(J_img.dtype)
-    return J_img + alpha_reg * reg
+    if regularization == "elastic":
+        reg = elastic_scale * elastic_energy(displacement, elements, elastic_grad, elastic_weight)
+    elif regularization == "spring":
+        reg = reg_energy_spring_global(
+            displacement, node_neighbor_index, node_neighbor_degree,
+            node_neighbor_weight, node_reg_weight,
+        )
+    else:
+        raise ValueError(f"Unknown regularization: {regularization}")
+    return J_img + alpha_reg * reg.astype(J_img.dtype)
 
 
 _J_TOTAL_VG = jax.value_and_grad(J_total)
@@ -343,6 +374,11 @@ def _cg_solve(
     interpolation,
     verbose,
     log_cg,
+    elements=None,
+    elastic_grad=None,
+    elastic_weight=None,
+    elastic_scale=1.0,
+    regularization="spring",
 ):
     max_iter = int(max_iter)
     disp0 = jnp.asarray(disp0)
@@ -360,6 +396,12 @@ def _cg_solve(
         node_neighbor_weight,
         node_reg_weight,
         interpolation,
+        alpha_reg,
+        elements,
+        elastic_grad,
+        elastic_weight,
+        elastic_scale,
+        regularization,
     )
 
     def cond_fun(state):
@@ -369,11 +411,7 @@ def _cg_solve(
 
     def body_fun(state):
         k, disp, direction, grad_prev, done, hist = state
-        J_val, grad = _J_TOTAL_VG(
-            disp,
-            *objective_args,
-            alpha_reg,
-        )
+        J_val, grad = _J_TOTAL_VG(disp, *objective_args)
         grad_norm = jnp.linalg.norm(grad)
         stop = grad_norm < tol
 
@@ -424,11 +462,7 @@ def _cg_solve(
 
                 def compute_step(_):
                     candidate_disp = disp + alpha * direction_new
-                    J_candidate = J_total(
-                        candidate_disp,
-                        *objective_args,
-                        alpha_reg,
-                    )
+                    J_candidate = J_total(candidate_disp, *objective_args)
                     satisfies = J_candidate <= J_val + c_armijo * alpha * gd
                     alpha_next = jnp.where(satisfies, alpha, alpha * 0.5)
                     return alpha_next, J_candidate, satisfies

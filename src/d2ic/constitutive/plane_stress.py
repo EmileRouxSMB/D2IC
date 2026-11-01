@@ -66,4 +66,6 @@ def integrate_plane_stress_increment(
 
 def flow_scale(material: Hill48Material) -> Array:
     """Stress scale used only to normalize plane-stress convergence."""
-    return jnp.maximum(jnp.abs(material.hardening[0]), 1.0)
+    sigma0 = (material.hardening[0, 1] if material.hardening_model == "tabulated"
+              else material.hardening[0])
+    return jnp.maximum(jnp.abs(sigma0), 1.0)

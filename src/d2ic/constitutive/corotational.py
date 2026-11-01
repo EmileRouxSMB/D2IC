@@ -52,6 +52,7 @@ def integrate_corotational_plane_stress(
     stress_global = Q_new @ stress_material_2d @ Q_new.T
     return state_new, {
         "cauchy_stress": stress_global,
+        "plastic_strain": state_new.plastic_strain,
         "equivalent_plastic_strain": state_new.equivalent_plastic_strain,
         "thickness_ratio": jnp.exp(state_new.log_thickness_strain),
         "tangent_material": tangent,

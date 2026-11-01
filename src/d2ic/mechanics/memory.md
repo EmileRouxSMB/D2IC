@@ -49,3 +49,5 @@ le coût doit réutiliser les efforts du préfixe en cache. Le cache est invalid
 après changement matériau ou déplacement dans ce préfixe. La cinématique, y
 compris ses orientations cumulées, reste calculée sur le chemin complet.
 Le modèle reste corotationnel logarithmique, sans décomposition multiplicative.
+
+`prepare_history` accepte une orientation initiale optionnelle pour calculer un incrément isolé dans la même base matérielle que l’histoire complète.

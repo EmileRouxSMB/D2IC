@@ -109,10 +109,9 @@ def mask_to_mesh(
     if not elements:
         raise ValueError("mask_to_mesh: no elements found inside the ROI.")
 
-    nodes_array = _ARRAY_LIB.asarray(node_coords)
-    elements_array = _ARRAY_LIB.asarray(np.asarray(elements, dtype=np.int32))
-    _sanity_check_mesh(nodes_array, elements_array)
-    return Mesh(nodes_xy=nodes_array, elements=elements_array)
+    mesh = _mesh_from_q4_connectivity(node_coords, np.asarray(elements, dtype=np.int32))
+    _sanity_check_mesh(mesh.nodes_xy, mesh.elements)
+    return mesh
 
 
 def mask_to_mesh_assets(
@@ -165,6 +164,7 @@ def mask_to_mesh_gmsh(
     verbose: bool = False,
     remove_islands: bool = True,
     min_island_area_px: int = 64,
+    numpy_output: bool = False,
 ) -> Mesh:
     """
     Generate a quadrilateral mesh with Gmsh from a binary ROI mask.
@@ -183,6 +183,8 @@ def mask_to_mesh_gmsh(
         complex ROIs; set to False for faster startup.
     verbose:
         If True, print timing information for each meshing step.
+    numpy_output:
+        Keep preview geometry on CPU instead of transferring it to JAX.
     """
     if gmsh is None or _GMSH_IMPORT_ERROR is not None:
         detail = f"{type(_GMSH_IMPORT_ERROR).__name__}: {_GMSH_IMPORT_ERROR}"
@@ -239,7 +241,8 @@ def mask_to_mesh_gmsh(
 
     nodes_array: Array | None = None
     elements_array: Array | None = None
-    gmsh.initialize([])
+    # The GUI invokes meshing from a FastAPI worker thread; Gmsh must not install signal handlers there.
+    gmsh.initialize([], interruptible=False)
     try:
         gmsh.option.setNumber("General.Terminal", 1 if verbose else 0)
         model_name = "mask_roi"
@@ -260,15 +263,18 @@ def mask_to_mesh_gmsh(
                 continue
             if area < 0.0:
                 coords = coords[::-1]
+            if np.allclose(coords[0], coords[-1]):
+                coords = coords[:-1]
 
             point_tags: list[int] = []
             for (x, y) in coords:
                 tag = gmsh.model.geo.addPoint(float(x), float(y), 0.0, element_size_px)
                 point_tags.append(tag)
-            if point_tags[0] != point_tags[-1]:
-                point_tags.append(point_tags[0])
-            polyline = gmsh.model.geo.addPolyline(point_tags)
-            loop = gmsh.model.geo.addCurveLoop([polyline])
+            # Separate CAD lines constrain polygon vertices during meshing;
+            # the Q4 output must still be checked for complete boundary rows.
+            lines = [gmsh.model.geo.addLine(point_tags[i], point_tags[(i + 1) % len(point_tags)])
+                     for i in range(len(point_tags))]
+            loop = gmsh.model.geo.addCurveLoop(lines)
             if idx == 0:
                 major_loop = loop
             else:
@@ -322,14 +328,18 @@ def mask_to_mesh_gmsh(
             count=len(quad_nodes),
         ).reshape(-1, 4)
 
-        nodes_array = _ARRAY_LIB.asarray(coords[:, :2])
-        elements_array = _ARRAY_LIB.asarray(elements)
+        mesh = _mesh_from_q4_connectivity(
+            coords[:, :2], elements, array_lib=np if numpy_output else _ARRAY_LIB
+        )
+        nodes_array = mesh.nodes_xy
+        elements_array = mesh.elements
     finally:
         gmsh.finalize()
 
     if nodes_array is None or elements_array is None:
         raise RuntimeError("mask_to_mesh_gmsh: failed to extract mesh nodes/elements from gmsh.")
 
+    _sanity_check_mesh(nodes_array, elements_array)
     return Mesh(nodes_xy=nodes_array, elements=elements_array)
 
 
@@ -423,6 +433,24 @@ def _remove_small_components(mask: np.ndarray, min_area: int) -> np.ndarray:
     return result
 
 
+def _mesh_from_q4_connectivity(
+    nodes_xy: np.ndarray, elements: np.ndarray, *, array_lib=None
+) -> Mesh:
+    """Conserve les nœuds utilisés par les Q4 et renumérote leurs indices.
+
+    nodes_xy : (N, 2) ; elements : (Ne, 4). Le maillage retourné ne contient
+    aucun nœud isolé, y compris lorsque Gmsh fournit des nœuds de contour
+    absents des éléments quadrilatères retenus pour la DIC.
+    """
+    used, compact_elements = np.unique(elements, return_inverse=True)
+    connected_nodes = np.asarray(nodes_xy)[used]
+    lib = _ARRAY_LIB if array_lib is None else array_lib
+    return Mesh(
+        nodes_xy=lib.asarray(connected_nodes),
+        elements=lib.asarray(compact_elements.reshape(-1, 4).astype(np.int32)),
+    )
+
+
 def _sanity_check_mesh(nodes: Array, elements: Array) -> None:
     if np.isnan(np.asarray(nodes)).any():
         raise ValueError("Mesh nodes contain NaNs")
@@ -432,6 +460,8 @@ def _sanity_check_mesh(nodes: Array, elements: Array) -> None:
         raise ValueError("Elements must be quad connectivity")
     if np.any(elem < 0) or np.any(elem > max_index):
         raise ValueError("Element connectivity out of bounds")
+    if np.unique(elem).size != nodes.shape[0]:
+        raise ValueError("Mesh contains nodes unused by Q4 elements")
 
 
 def _extract_contours(

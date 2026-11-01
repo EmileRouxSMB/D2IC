@@ -13,9 +13,11 @@ class SequenceConfig:
 
     img_dir: Path
     ref_image_name: str
-    mask_filename: str
+    mask_filename: str | None
+    mask_path: Path
     image_pattern: str
     image_stride: int
+    image_paths: tuple[Path, ...] | None
     max_deformed_images: int | None
     out_dir: Path
 
@@ -29,6 +31,7 @@ class SequenceConfig:
     max_iters: int
     tol: float
     reg_strength: float
+    regularization: str
     local_sweeps: int
     use_velocity: bool
     strain_gauge_length: float
@@ -51,7 +54,13 @@ class SequenceConfig:
     plot_projection: str | bool
     keep_results: bool
     save_npz: bool
+    export_legacy_npz: bool
     save_mesh: bool
+
+    abaqus_comparison_enabled: bool
+    abaqus_npz: Path | None
+    abaqus_metadata_json: Path | None
+    abaqus_max_extrapolation_px: float
 
     jax_preferred: str
     jax_fallback: str
@@ -72,11 +81,31 @@ def load_sequence_config(cfg_path: Path) -> SequenceConfig:
     paths = _require_table(data, "paths")
     img_dir = _resolve_path(_require_str(paths, "img_dir"), base=cfg_dir)
     out_dir = _resolve_path(_require_str(paths, "out_dir"), base=cfg_dir)
+    mask_filename = (_require_str(paths, "mask_filename")
+                     if "mask_filename" in paths else None)
+    if "mask_path" in paths:
+        # An explicit path is relative to the config file, not the image folder.
+        mask_path = _resolve_path(_require_str(paths, "mask_path"), base=cfg_dir)
+    elif mask_filename is not None:
+        # Preserve the original configuration convention.
+        mask_path = (img_dir / mask_filename).resolve()
+    else:
+        raise ValueError("Config paths requires mask_path or mask_filename.")
 
     mesh = _require_table(data, "mesh")
     dic = _require_table(data, "dic")
     output = _require_table(data, "output")
     runtime = _require_table(data, "runtime")
+    comparison = data.get("abaqus_comparison", {})
+    if not isinstance(comparison, dict):
+        raise ValueError("Config table abaqus_comparison must be a table.")
+    comparison_enabled = bool(comparison.get("enabled", False))
+    abaqus_npz = comparison.get("abaqus_npz")
+    metadata_json = comparison.get("metadata_json")
+    if comparison_enabled and (not isinstance(abaqus_npz, str) or not isinstance(metadata_json, str)):
+        raise ValueError(
+            "Enabled Abaqus comparison requires abaqus_npz and metadata_json paths."
+        )
 
     export_frames = output.get("export_frames")
     if export_frames is None:
@@ -95,12 +124,29 @@ def load_sequence_config(cfg_path: Path) -> SequenceConfig:
     if image_stride < 1:
         raise ValueError("paths.image_stride must be >= 1.")
 
+    image_paths_raw = paths.get("image_paths")
+    if image_paths_raw is not None:
+        if (not isinstance(image_paths_raw, list) or not image_paths_raw
+                or any(not isinstance(value, str) or not value for value in image_paths_raw)):
+            raise ValueError("paths.image_paths must be a nonempty list of image paths.")
+        image_paths = tuple(_resolve_path(value, base=cfg_dir) for value in image_paths_raw)
+        if len(set(image_paths)) != len(image_paths):
+            raise ValueError("paths.image_paths contains duplicate images.")
+    else:
+        image_paths = None
+
+    regularization = str(dic.get("regularization", "elastic"))
+    if regularization not in ("elastic", "spring"):
+        raise ValueError("dic.regularization must be elastic or spring")
+
     return SequenceConfig(
         img_dir=img_dir,
         ref_image_name=_require_str(paths, "ref_image_name"),
-        mask_filename=_require_str(paths, "mask_filename"),
+        mask_filename=mask_filename,
+        mask_path=mask_path,
         image_pattern=_require_str(paths, "image_pattern"),
         image_stride=image_stride,
+        image_paths=image_paths,
         max_deformed_images=(None if paths.get("max_deformed_images") is None else int(paths["max_deformed_images"])),
         out_dir=out_dir,
         mesh_element_size_px=float(_require_number(mesh, "element_size_px")),
@@ -112,6 +158,7 @@ def load_sequence_config(cfg_path: Path) -> SequenceConfig:
         max_iters=int(_require_number(dic, "max_iters")),
         tol=float(_require_number(dic, "tol")),
         reg_strength=float(_require_number(dic, "reg_strength")),
+        regularization=regularization,
         local_sweeps=int(dic.get("local_sweeps", 0)),
         use_velocity=bool(dic.get("use_velocity", True)),
         strain_gauge_length=float(_require_number(dic, "strain_gauge_length")),
@@ -130,9 +177,16 @@ def load_sequence_config(cfg_path: Path) -> SequenceConfig:
         plot_dpi=int(output.get("plot_dpi", 200)),
         plot_binning=float(output.get("plot_binning", image_binning)),
         plot_projection=output.get("plot_projection", "fast"),
-        keep_results=bool(output.get("keep_results", True)),
+        keep_results=bool(output.get("keep_results", comparison_enabled)),
         save_npz=bool(output.get("save_npz", True)),
+        export_legacy_npz=bool(output.get("export_legacy_npz", True)),
         save_mesh=bool(output.get("save_mesh", True)),
+        abaqus_comparison_enabled=comparison_enabled,
+        abaqus_npz=None if abaqus_npz is None else _resolve_path(abaqus_npz, base=cfg_dir),
+        abaqus_metadata_json=(
+            None if metadata_json is None else _resolve_path(metadata_json, base=cfg_dir)
+        ),
+        abaqus_max_extrapolation_px=float(comparison.get("max_extrapolation_px", 1.0)),
         jax_preferred=str(runtime.get("jax_preferred", "gpu")),
         jax_fallback=str(runtime.get("jax_fallback", "cpu")),
         jax_enable_x64=bool(runtime.get("jax_enable_x64", False)),
