@@ -6,6 +6,9 @@ Cas scientifiques reproductibles et configurations directement exécutables.
 
 ## Fichiers importants
 
+- `meuvissen_adaptive_mechanical_gp.py` : comparaison DIC libre, mécanique uniforme et GP adaptatif sur la séquence butterfly synthétique avec vérité Abaqus.
+- `plot_meuvissen_gp_validation.py` : génération des cartes PNG de déplacement, erreur, confiance GP et incertitude à partir du NPZ de validation.
+
 - `sequential_dic_platehole.py` : traitement séquentiel FE-DIC du cas PlateHole depuis TOML.
 - `validation_sample3_translation.py` : validation de translation rigide sur Sample3.
 - `constitutive_postprocess_platehole.py` : post-traitement total Hill48/Voce depuis le NPZ DIC.

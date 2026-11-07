@@ -156,11 +156,29 @@ class DICMeshBased(DICBase):
         strain = sol.strain
         assets = self._state.assets
         diag_info = {"stage": "mesh_based"}
+        fields = {}
         pixel_maps = {}
         if getattr(sol, "n_iters", None) is not None:
             diag_info["n_iters"] = sol.n_iters
         if getattr(sol, "history", None) is not None:
             diag_info["history"] = "attached"
+        for name in (
+            "log_mechanical_variance",
+            "mechanical_confidence",
+            "log_variance_std",
+        ):
+            value = getattr(sol, name, None)
+            if value is not None:
+                fields[name] = value
+        mechanical_residual = getattr(sol, "mechanical_residual", None)
+        if mechanical_residual is not None:
+            fields["mechanical_residual_norm"] = jnp.linalg.norm(
+                mechanical_residual, axis=-1
+            )
+            diag_info["mechanical_regularization"] = (
+                "gp_adaptive" if bool(getattr(sol, "adaptive", False))
+                else "uniform"
+            )
 
         has_neighbors = assets.node_neighbor_index is not None and assets.node_neighbor_degree is not None
         if has_neighbors:
@@ -207,5 +225,6 @@ class DICMeshBased(DICBase):
             diagnostics=diag,
             mesh=assets.mesh,
             history=history,
+            fields=fields,
             pixel_maps=pixel_maps,
         )
