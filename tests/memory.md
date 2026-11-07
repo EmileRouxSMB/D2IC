@@ -6,6 +6,9 @@ Tests scientifiques, compatibilité JAX et validations de séquences.
 
 ## Fichiers importants
 
+- `test_correlation_roi.py` : érosion euclidienne, trous, bord image, unités avec
+  binning, maillage inchangé, sélection des observations et export des deux ROI.
+
 - `test_binning.py` : convention commune de binning des images et masques FE/GP.
 - `test_mesh_data_model.py` : invariants de topologie et compatibilité PyTree.
 - `test_strain_smoke.py` : extension homogène analytique.

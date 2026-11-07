@@ -101,12 +101,15 @@ class ResultStore:
             return
         _atomic_npz(mesh_path, nodes_xy=nodes, elements=elems)
 
-    def write_roi_mask(self, roi_mask: np.ndarray) -> None:
-        """Persist the reference-aligned ROI mask used to build the mesh."""
+    def write_roi_mask(self, roi_mask: np.ndarray, *, correlation_mask=None) -> None:
+        """Persist original mesh ROI and optional working-resolution photo ROI."""
         mask = np.asarray(roi_mask, dtype=bool)
         if mask.ndim != 2:
             raise ValueError("roi_mask must have shape (H,W).")
-        _atomic_npz(self.path / "roi.npz", roi_mask=mask)
+        payload = {"roi_mask": mask}
+        if correlation_mask is not None:
+            payload["correlation_mask"] = np.asarray(correlation_mask, dtype=bool)
+        _atomic_npz(self.path / "roi.npz", **payload)
 
     def write_frame(self, index: int, *, u_nodal: np.ndarray, strain: np.ndarray,
                     discrepancy_ref: np.ndarray | None = None) -> None:
@@ -251,6 +254,8 @@ class ResultStore:
             if roi_path.exists():
                 with np.load(roi_path, allow_pickle=False) as archive:
                     payload["roi_mask"] = np.asarray(archive["roi_mask"], dtype=bool)
+                    if "correlation_mask" in archive:
+                        payload["correlation_mask"] = np.asarray(archive["correlation_mask"], dtype=bool)
             payload.update({key: np.asarray(value) for key, value in self.metadata.items()
                             if key != "schema_version" and isinstance(value, (str, int, float, list, np.ndarray))})
             if discrepancy_stack is not None:

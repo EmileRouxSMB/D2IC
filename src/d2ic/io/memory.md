@@ -21,6 +21,13 @@ Lecture d’images, configuration TOML, sélection runtime JAX et interface CLI.
 
 ## Concepts physiques ou numériques
 
+`dic.roi_erosion_px` (défaut 0) définit une érosion euclidienne du masque
+photométrique en pixels originaux. `erode_correlation_roi` traite aussi les
+trous et l'extérieur de l'image, avec conversion d'échelle par le binning.
+Le ROI initial génère toujours le maillage ; les observations seules sont
+réduites. Les exports distinguent `roi_mask` (résolution originale) et
+`correlation_mask` (résolution de travail), avec le rayon dans les métadonnées.
+
 Le prétraitement image fixe l’échelle photométrique et les masques utilisés par les méthodes DIC. La configuration décrit les paramètres expérimentaux et numériques d’une séquence.
 
 ## Conventions
@@ -42,8 +49,16 @@ aux filtres de ParaView. `Equivalent_stress` contient la contrainte équivalente
 de von Mises calculée aux points de Gauss puis moyennée par élément.
 
 Le binning image moyenne les blocs complets et tronque le bord incomplet. Le
-binning de masque suit la règle FE conservative : un bloc est actif si au moins
-un pixel source est actif; les blocs de bord incomplets sont conservés.
+binning FE du masque suit la règle conservative : un bloc est actif si au moins
+un pixel source est actif; les blocs de bord incomplets sont conservés. Le
+pipeline DIC tronque ensuite ce masque uniquement pour les observations afin
+qu'il corresponde à l'image binnée; le masque d'origine destiné au maillage
+conserve sa géométrie FE.
+
+Les masques TIFF produits par D2IC_GUI portent `ROI_MASK_DESCRIPTION` dans le
+tag ImageDescription et déclarent explicitement le blanc comme premier plan.
+`read_roi_mask` respecte ce marqueur ; les masques historiques non marqués
+continuent d’utiliser l’heuristique de polarité de `make_roi_mask`.
 
 ## Points d’attention
 

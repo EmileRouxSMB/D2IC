@@ -15,7 +15,7 @@ try:  # optional mesh writer
 except Exception:  # pragma: no cover
     meshio = None
 
-from ..io.app_utils import configure_jax_platform, imread_gray, list_deformed_images, prepare_image, make_roi_mask
+from ..io.app_utils import configure_jax_platform, imread_gray, list_deformed_images, prepare_image, read_roi_mask, erode_correlation_roi
 from ..batch.mesh_based import BatchMeshBased
 from ..io.config import load_sequence_config
 from ..io.result_store import ResultStore
@@ -90,7 +90,7 @@ def run_sequence_from_config(
 
     t0 = time.perf_counter()
     mask_image = imread_gray(mask_path)
-    mask = make_roi_mask(mask_image)
+    mask = read_roi_mask(mask_path, mask_image)
     _log_elapsed(cfg, "Loaded mask image", t0)
     unique_vals = np.unique(mask_image)
     unique_count = unique_vals.size
@@ -125,6 +125,16 @@ def run_sequence_from_config(
             "no fallback mesh was generated."
         ) from exc
     print("Generated mesh via Gmsh-based pipeline.")
+    # Geometry remains the original ROI; only image observations are eroded.
+    # FE mask binning retains partial edge blocks, while image binning drops
+    # them. Clip only the observation mask so its shape matches ref_image;
+    # mesh nodes/elements remain those generated from the original ROI.
+    observation_roi = assets.roi_mask[:ref_image.shape[0], :ref_image.shape[1]]
+    correlation_mask = erode_correlation_roi(
+        observation_roi, cfg.roi_erosion_px, image_binning=cfg.image_binning)
+    assets = replace(assets, roi_mask=correlation_mask, pixel_data=None)
+    print(f"[ROI] correlation erosion={cfg.roi_erosion_px:g} original px; "
+          f"retained pixels={correlation_mask.sum()}")
     _log_elapsed(cfg, "Mesh generation", t0)
     _log_verbose(cfg, f"[Mesh] nodes: {len(mesh.nodes_xy)}, elements: {len(mesh.elements)}")
 
@@ -231,6 +241,7 @@ def run_sequence_from_config(
             "def_paths": [str(path) for path in def_paths],
             "image_stride": cfg.image_stride,
             "image_binning": cfg.image_binning,
+            "roi_erosion_px": cfg.roi_erosion_px,
             "image_shape": list(ref_image.shape),
             "regularization": cfg.regularization,
             "reg_strength": cfg.reg_strength,
@@ -240,7 +251,7 @@ def run_sequence_from_config(
         }
         result_store = ResultStore(store_dir, metadata=metadata)
         result_store.write_mesh(np.asarray(assets.mesh.nodes_xy), np.asarray(assets.mesh.elements))
-        result_store.write_roi_mask(mask)
+        result_store.write_roi_mask(mask, correlation_mask=correlation_mask)
         checkpoint = result_store.load_checkpoint(result_fingerprint)
         if checkpoint is not None:
             candidate = int(checkpoint["completed_frames"])
@@ -329,6 +340,8 @@ def run_sequence_from_config(
                 "u_nodal": u_stack,
                 "strain": strain_stack,
                 "roi_mask": np.asarray(mask, dtype=bool),
+                "correlation_mask": correlation_mask,
+                "roi_erosion_px": np.asarray(cfg.roi_erosion_px),
                 "image_shape": np.asarray(ref_image.shape, dtype=np.int64),
                 "image_binning": np.asarray(cfg.image_binning, dtype=np.int64),
                 "strain_shear_convention": np.asarray("tensorial_E12"),

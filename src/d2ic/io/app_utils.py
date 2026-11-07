@@ -7,6 +7,35 @@ import numpy as np
 from .binning import bin_image
 
 
+ROI_MASK_DESCRIPTION = "D2IC_ROI_MASK_WHITE_FOREGROUND_V1"
+
+
+def erode_correlation_roi(roi_mask, radius_px=0., *, image_binning=1):
+    """Return the fixed photometric ROI, without changing the mesh ROI.
+
+    Parameters are a boolean (H,W) mask at the working resolution and a
+    Euclidean erosion radius in original-image pixels. Exterior and holes
+    count as excluded pixels; a zero radius preserves the mask exactly.
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    mask = np.asarray(roi_mask, dtype=bool)
+    if mask.ndim != 2:
+        raise ValueError("Correlation ROI must have shape (H,W).")
+    if not np.isfinite(radius_px) or radius_px < 0:
+        raise ValueError("roi_erosion_px must be finite and >= 0.")
+    if not np.isfinite(image_binning) or image_binning < 1:
+        raise ValueError("image_binning must be >= 1.")
+    if radius_px == 0:
+        result = mask.copy()
+    else:
+        distance = distance_transform_edt(np.pad(mask, 1), sampling=image_binning)[1:-1, 1:-1]
+        result = mask & (distance > radius_px)
+    if not result.any():
+        raise ValueError("ROI erosion leaves no pixels for correlation.")
+    return result
+
+
 def configure_jax_platform(preferred: str = "gpu", fallback: str = "cpu", *, verbose: bool = True) -> str:
     """
     Try to use the preferred JAX backend, falling back when unavailable.
@@ -138,6 +167,33 @@ def make_roi_mask(mask_image: np.ndarray, *, threshold: float = 0.5) -> np.ndarr
             mask = data == dark_val
         return mask
     return data > threshold
+
+
+def read_roi_mask(path: Path, mask_image: np.ndarray | None = None) -> np.ndarray:
+    """Read a ROI mask, honoring explicit white foreground in marked TIFFs.
+
+    GUI-generated binary TIFFs carry :data:`ROI_MASK_DESCRIPTION` in their
+    ImageDescription tag. Their nonzero pixels are always foreground, even
+    when they cover more than 95% of the image. Unmarked TIFF and other legacy
+    masks retain :func:`make_roi_mask`'s historical polarity heuristic.
+
+    ``mask_image`` may supply an already decoded grayscale image to avoid a
+    second image read in the sequential pipeline.
+    """
+    path = Path(path)
+    if mask_image is None:
+        mask_image = imread_gray(path)
+    data = np.asarray(mask_image)
+    if data.ndim != 2:
+        raise ValueError(f"ROI mask must be a 2D image, got shape {data.shape}.")
+    if path.suffix.lower() in {".tif", ".tiff"}:
+        import tifffile
+
+        with tifffile.TiffFile(path) as tif:
+            description = tif.pages[0].description
+        if description == ROI_MASK_DESCRIPTION:
+            return data > 0.5
+    return make_roi_mask(data)
 
 
 def downsample_image(image: np.ndarray, binning: int) -> np.ndarray:

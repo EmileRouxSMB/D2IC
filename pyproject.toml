@@ -13,6 +13,7 @@ dependencies = [
   "jax",
   "opencv-python",
   "numpy",
+  "tifffile",
   "scipy",
   "matplotlib",
   "scikit-image",

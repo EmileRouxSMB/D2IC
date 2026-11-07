@@ -1,5 +1,12 @@
 # Memory — pipelines
 
+Le pipeline séquentiel maille le ROI initial puis remplace uniquement le masque
+des assets photométriques par son érosion `dic.roi_erosion_px`. Aucun nœud ou
+élément n'est supprimé. Solveurs global et local partagent ce masque fixe.
+Le masque FE binné peut inclure les blocs de bord incomplets, contrairement à
+l'image binnée qui les tronque. Avant érosion photo, le pipeline découpe donc
+le masque d'observations à `ref_image.shape`; le maillage original reste intact.
+
 ## Rôle du dossier
 
 Orchestration de cas DIC complets à partir de configurations et d’images.
@@ -36,6 +43,9 @@ est demandé avec `elastic`, il poursuit l'objectif global par CG, car la
 mise à jour Jacobi locale existante est spécifique aux ressorts.
 
 Le pipeline lit le masque résolu dans `cfg.mask_path`, ce qui permet de conserver le masque hors du dossier des images visibles.
+Le lecteur `read_roi_mask` conserve la polarité blanche explicite des TIFF
+générés par D2IC_GUI via le marqueur ImageDescription ; un masque ancien sans
+marqueur suit toujours l’heuristique historique `make_roi_mask`.
 
 Le pipeline lit une image déformée à la fois. Si `save_npz=True`, chaque résultat est écrit dans un magasin versionné par image, avec progression et checkpoint contenant les deux derniers déplacements. Le fingerprint inclut les empreintes SHA-256 des images source; l’export global est remplacé atomiquement. Le NPZ global reste un export de compatibilité reconstruit depuis ce magasin.
 

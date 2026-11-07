@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
+import math
 
 import tomllib
 
@@ -66,6 +67,7 @@ class SequenceConfig:
     jax_fallback: str
     jax_enable_x64: bool
     jax_matmul_precision: str | None
+    roi_erosion_px: float = 0.
 
 
 def load_sequence_config(cfg_path: Path) -> SequenceConfig:
@@ -120,6 +122,10 @@ def load_sequence_config(cfg_path: Path) -> SequenceConfig:
     if image_binning < 1:
         raise ValueError("dic.image_binning must be >= 1.")
 
+    roi_erosion_px = float(dic.get("roi_erosion_px", 0.))
+    if not math.isfinite(roi_erosion_px) or roi_erosion_px < 0:
+        raise ValueError("dic.roi_erosion_px must be finite and >= 0.")
+
     image_stride = int(paths.get("image_stride", 1))
     if image_stride < 1:
         raise ValueError("paths.image_stride must be >= 1.")
@@ -165,6 +171,7 @@ def load_sequence_config(cfg_path: Path) -> SequenceConfig:
         interpolation=str(dic.get("interpolation", "cubic")),
         verbose=bool(dic.get("verbose", False)),
         image_binning=image_binning,
+        roi_erosion_px=roi_erosion_px,
         export_png=bool(output.get("export_png", True)),
         export_vtu=bool(output.get("export_vtu", False)),
         export_vtk_images=bool(output.get("export_vtk_images", False)),

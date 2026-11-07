@@ -22,6 +22,8 @@ strain_gauge_length = 80.0
 interpolation = "cubic"
 verbose = true
 image_binning = 1
+# Euclidean erosion in original-image pixels; mesh ROI is unchanged.
+roi_erosion_px = 0.0
 
 [output]
 export_png = true
