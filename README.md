@@ -1,5 +1,7 @@
 # D²IC
 
+Version **1.2.0** · Git tag **V1.2** · [Release notes](CHANGELOG.md)
+
 D²IC (a differentiable framework for full-field kinematic identification) is an open-source Python package for 2D Digital Image Correlation (DIC) built on top of [JAX](https://github.com/google/jax). It implements a global finite-element DIC formulation (quadrilateral mesh on the ROI) by minimizing a pixelwise brightness-constancy objective with optional spring regularization. Because the computational core is written in JAX, the same solver kernels run on CPU or accelerator backends and expose exact gradients via automatic differentiation.
 
 The codebase ships a single API: the `d2ic` package (mesh/asset layer, solvers, batch execution, strain post-processing).
@@ -171,6 +173,82 @@ If you use D²IC in academic work, please cite the accompanying article manuscri
 2. Implement your changes/tests (keep CPU/GPU parity and JIT-compatibility in mind).
 3. Document the impact in your PR (performance, scripts, API updates).
 4. Run `pytest` and, for DIC changes, rerun at least one tutorial pipeline.
+
+## Publier du dépôt de développement vers le dépôt public
+
+Le développement se fait dans [D2IC_forked](https://github.com/EmileRouxSMB/D2IC_forked).
+Les versions prêtes sont envoyées vers [D2IC](https://github.com/EmileRouxSMB/D2IC)
+sur une branche de préparation, puis intégrées à `main` par Pull Request.
+
+### Configurer la destination publique (une fois par clone local)
+
+Depuis le dossier local de D2IC, vérifier le dépôt courant et ses destinations :
+
+```bash
+git rev-parse --show-toplevel
+git remote -v
+```
+
+Si `public` n'existe pas, l'ajouter :
+
+```bash
+git remote add public https://github.com/EmileRouxSMB/D2IC.git
+```
+
+Si `public` existe avec une mauvaise URL, la corriger :
+
+```bash
+git remote set-url public https://github.com/EmileRouxSMB/D2IC.git
+```
+
+Récupérer ensuite les références du dépôt public :
+
+```bash
+git fetch public
+```
+
+La destination `public` est propre à chaque clone local. L'erreur
+`'public' does not appear to be a git repository` invite à vérifier le dossier
+courant et la sortie de `git remote -v`.
+
+### Envoyer les changements et ouvrir une Pull Request
+
+Vérifier les modifications, puis enregistrer les fichiers à publier dans des
+commits. Exemple pour une modification de ce README :
+
+```bash
+git status
+git diff -- README.md
+git add README.md
+git commit -m "docs: document public repository publication"
+```
+
+Depuis la branche contenant les commits à publier :
+
+```bash
+git push public HEAD:publication-d2ic
+```
+
+Cette commande publie les commits de la branche courante et leur historique
+accessible ; les modifications non commitées ne sont pas envoyées.
+Ouvrir ensuite la [Pull Request](https://github.com/EmileRouxSMB/D2IC/pull/new/publication-d2ic)
+avec `base: main` et `compare: publication-d2ic`. Examiner les différences, puis
+fusionner la Pull Request pour mettre à jour la version publique.
+
+Tant que la Pull Request est ouverte, de nouveaux commits peuvent être ajoutés
+avec la même commande de push. Pour une publication ultérieure, commencer par
+`git fetch public` et vérifier que la branche à publier intègre les changements
+de `public/main`. Si la branche distante `publication-d2ic` a été supprimée après
+fusion, le prochain push la recrée. En cas de rejet pour divergence d'historique,
+réconcilier les branches avant de réessayer, sans utiliser `--force`.
+
+Les avertissements `safe.directory 'D:/...' not absolute` observés sous Linux/WSL
+proviennent de chemins Windows présents dans la configuration Git. Ils n'ont pas
+bloqué la publication ci-dessus. Pour localiser ces entrées :
+
+```bash
+git config --show-origin --show-scope --get-all safe.directory
+```
 
 ## License
 D²IC is distributed under the GPLv3 license. See `AUTHORS` for the list of contributors.
