@@ -96,22 +96,6 @@ Rigid-body translation validation on Sample3 with mean displacement tracking and
 ### Advanced: uncertainty propagation (notebook)
 Open `doc/11_Advanced_Use_Uncertainty_Propagation.ipynb` to reproduce the JVP-based uncertainty propagation workflow.
 
-## Benchmark CPU vs GPU (script autonome)
-To reproduce the benchmark (and regenerate `benchmark_cpu.json`, `benchmark_gpu.json`, and `benchmark_indicators.png`):
-```bash
-python benchmarks/benchmark_butterfly_cpu_vs_gpu.py
-```
-
-Resultats extraits de `benchmarks/benchmark_cpu.json` et `benchmarks/benchmark_gpu.json` (11 frames, WSL2; GPU: NVIDIA RTX 2000 Ada Generation Laptop GPU). Temps en secondes:
-
-| Backend | Warmup/Prep (s) | DIC / frame (s) | Total (s) |
-|---|---:|---:|---:|
-| CPU | 3.21 | 0.85 | 12.61 |
-| GPU | 42.65 | 2.04 | 65.09 |
-
-Commentaires (sur cette config):
-- Le CPU est plus rapide : GPU/CPU = x13.3 (warmup), x2.39 (par frame), x5.16 (total).
-- Le cout GPU est domine par la compilation/warmup et un probleme trop petit; sur des sequences plus longues ou des maillages plus gros, le GPU peut s'amortir.
 
 ## Programmatic usage
 ### `d2ic` API
@@ -174,81 +158,6 @@ If you use D²IC in academic work, please cite the accompanying article manuscri
 3. Document the impact in your PR (performance, scripts, API updates).
 4. Run `pytest` and, for DIC changes, rerun at least one tutorial pipeline.
 
-## Publier du dépôt de développement vers le dépôt public
-
-Le développement se fait dans [D2IC_forked](https://github.com/EmileRouxSMB/D2IC_forked).
-Les versions prêtes sont envoyées vers [D2IC](https://github.com/EmileRouxSMB/D2IC)
-sur une branche de préparation, puis intégrées à `main` par Pull Request.
-
-### Configurer la destination publique (une fois par clone local)
-
-Depuis le dossier local de D2IC, vérifier le dépôt courant et ses destinations :
-
-```bash
-git rev-parse --show-toplevel
-git remote -v
-```
-
-Si `public` n'existe pas, l'ajouter :
-
-```bash
-git remote add public https://github.com/EmileRouxSMB/D2IC.git
-```
-
-Si `public` existe avec une mauvaise URL, la corriger :
-
-```bash
-git remote set-url public https://github.com/EmileRouxSMB/D2IC.git
-```
-
-Récupérer ensuite les références du dépôt public :
-
-```bash
-git fetch public
-```
-
-La destination `public` est propre à chaque clone local. L'erreur
-`'public' does not appear to be a git repository` invite à vérifier le dossier
-courant et la sortie de `git remote -v`.
-
-### Envoyer les changements et ouvrir une Pull Request
-
-Vérifier les modifications, puis enregistrer les fichiers à publier dans des
-commits. Exemple pour une modification de ce README :
-
-```bash
-git status
-git diff -- README.md
-git add README.md
-git commit -m "docs: document public repository publication"
-```
-
-Depuis la branche contenant les commits à publier :
-
-```bash
-git push public HEAD:publication-d2ic
-```
-
-Cette commande publie les commits de la branche courante et leur historique
-accessible ; les modifications non commitées ne sont pas envoyées.
-Ouvrir ensuite la [Pull Request](https://github.com/EmileRouxSMB/D2IC/pull/new/publication-d2ic)
-avec `base: main` et `compare: publication-d2ic`. Examiner les différences, puis
-fusionner la Pull Request pour mettre à jour la version publique.
-
-Tant que la Pull Request est ouverte, de nouveaux commits peuvent être ajoutés
-avec la même commande de push. Pour une publication ultérieure, commencer par
-`git fetch public` et vérifier que la branche à publier intègre les changements
-de `public/main`. Si la branche distante `publication-d2ic` a été supprimée après
-fusion, le prochain push la recrée. En cas de rejet pour divergence d'historique,
-réconcilier les branches avant de réessayer, sans utiliser `--force`.
-
-Les avertissements `safe.directory 'D:/...' not absolute` observés sous Linux/WSL
-proviennent de chemins Windows présents dans la configuration Git. Ils n'ont pas
-bloqué la publication ci-dessus. Pour localiser ces entrées :
-
-```bash
-git config --show-origin --show-scope --get-all safe.directory
-```
 
 ## License
 D²IC is distributed under the GPLv3 license. See `AUTHORS` for the list of contributors.
