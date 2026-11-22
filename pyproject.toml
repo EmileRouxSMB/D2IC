@@ -11,8 +11,8 @@ authors = [{ name = "Emile Roux", email = "emile.roux@univ-smb.fr" }]
 license = { file = "LICENSE" }
 dependencies = [
   "jax",
-  "opencv-python",
   "numpy",
+  "tifffile",
   "scipy",
   "matplotlib",
   "scikit-image",
@@ -31,3 +31,9 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["d2ic*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "slow: validation test requiring the full reference image sequence",
+]

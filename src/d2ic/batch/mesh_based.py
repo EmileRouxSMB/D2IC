@@ -1,0 +1,396 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Sequence, Optional, Iterable
+import time
+
+import numpy as np
+import jax.numpy as jnp
+
+from .base import BatchBase
+from ..methods.mesh_based import DICMeshBased
+from ..mesh.assets import MeshAssets
+from ..core.types import Array
+from ..core.dataclasses import BatchConfig, BatchResult, BatchDiagnostics, DICResult
+from ..propagation.base import DisplacementPropagatorBase
+
+
+class BatchMeshBased(BatchBase):
+    """
+    Concrete batch runner for mesh-based DIC.
+
+    - Uses injected DICMeshBased instances.
+    - before(): prepares both pipelines with ref_image/assets.
+    - sequence(): runs per-frame DICMeshBased.run(def_image), optionally using a propagator.
+    - end(): optional post-processing hook.
+
+    Notes:
+    - This class assumes ref_image and assets are fixed for the whole batch.
+    """
+
+    def __init__(
+        self,
+        ref_image: Array,
+        assets: MeshAssets,
+        dic_mesh: DICMeshBased,
+        batch_config: BatchConfig,
+        dic_local: Optional[DICMeshBased] = None,
+        propagator: Optional[DisplacementPropagatorBase] = None,
+        result_store=None,
+        result_fingerprint: str | None = None,
+        frame_offset: int = 0,
+    ) -> None:
+        super().__init__()
+        self.ref_image = ref_image
+        self.assets = assets
+        self.dic_mesh = dic_mesh
+        self.dic_local = dic_local
+        self.config = batch_config
+        self.propagator = propagator
+        self.result_store = result_store
+        self.result_fingerprint = result_fingerprint
+        self.frame_offset = int(frame_offset)
+        self._is_prepared = False
+
+    def before(self, images: Sequence[Array]) -> None:
+        verbose = bool(getattr(self.config, "verbose", False))
+        progress = bool(getattr(self.config, "progress", False))
+        if verbose or progress:
+            print("[Warmup] Preparing global solver (compile + warmup)...")
+        t0 = time.perf_counter()
+        # Prepare mesh-based DIC pipeline
+        self.dic_mesh.prepare(self.ref_image, self.assets)
+        self.assets = self.dic_mesh.prepared_assets
+        if verbose or progress:
+            print("[Warmup] Global solver ready.")
+        if verbose:
+            print(f"[Warmup] Global solver time: {time.perf_counter() - t0:.2f}s")
+
+        # Prepare local refinement pipeline if provided
+        if self.dic_local is not None:
+            if verbose or progress:
+                print("[Warmup] Preparing local solver (compile + warmup)...")
+            t0 = time.perf_counter()
+            self.dic_local.prepare(self.ref_image, self.assets)
+            if verbose or progress:
+                print("[Warmup] Local solver ready.")
+            if verbose:
+                print(f"[Warmup] Local solver time: {time.perf_counter() - t0:.2f}s")
+
+        self._is_prepared = True
+
+    def sequence(self, images: Sequence[Array] | Iterable[Array]) -> BatchResult:
+        if not self._is_prepared:
+            raise RuntimeError("BatchMeshBased.before() must be called before sequence().")
+
+        save_per_frame = bool(getattr(self.config, "save_per_frame", False))
+        file_prefix = str(getattr(self.config, "file_prefix", "frame"))
+        keep_results = bool(getattr(self.config, "keep_results", True))
+        per_frame_dir = getattr(self.config, "per_frame_dir", None)
+        if save_per_frame:
+            if per_frame_dir is None:
+                per_frame_dir = Path.cwd() / "_outputs" / "per_frame_fields"
+            else:
+                per_frame_dir = Path(per_frame_dir)
+            per_frame_dir.mkdir(parents=True, exist_ok=True)
+
+        progress = bool(getattr(self.config, "progress", False))
+        verbose = bool(getattr(self.config, "verbose", False))
+
+        export_png = bool(getattr(self.config, "export_png", False))
+        export_vtu = bool(getattr(self.config, "export_vtu", False))
+        export_vtk_images = bool(getattr(self.config, "export_vtk_images", False))
+        vtu_datasets: list[tuple[float, Path]] = []
+        image_datasets: list[tuple[float, Path]] = []
+        vtu_dir = None
+        if export_vtu:
+            vtu_dir_cfg = getattr(self.config, "vtu_dir", None)
+            vtu_dir = Path(vtu_dir_cfg) if vtu_dir_cfg else Path.cwd() / "_outputs" / "paraview"
+            vtu_dir.mkdir(parents=True, exist_ok=True)
+        export_frames = getattr(self.config, "export_frames", None)
+        png_dir = None
+        plot_fields = None
+        plot_cmap = None
+        plot_alpha = None
+        plot_mesh = None
+        plot_dpi = None
+        plot_binning = None
+        plot_projection = None
+        pixel_assets = None
+        if export_png:
+            from ..visualization.plotter import DICPlotter
+            from ..mesh.pixel_sampling import build_pixel_assets
+            import matplotlib.pyplot as plt
+
+            png_dir_cfg = getattr(self.config, "png_dir", None)
+            if png_dir_cfg is None:
+                png_dir = Path.cwd() / "_outputs" / "png"
+            else:
+                png_dir = Path(png_dir_cfg)
+            png_dir.mkdir(parents=True, exist_ok=True)
+
+            plot_fields = list(getattr(self.config, "plot_fields", ("u1", "u2", "e11", "e22", "e12")))
+            if bool(getattr(self.config, "plot_include_discrepancy", False)):
+                plot_fields.append("discrepancy")
+            plot_cmap = getattr(self.config, "plot_cmap", "jet")
+            plot_alpha = float(getattr(self.config, "plot_alpha", 0.6))
+            plot_mesh = bool(getattr(self.config, "plot_mesh", True))
+            plot_dpi = int(getattr(self.config, "plot_dpi", 200))
+            plot_binning = float(getattr(self.config, "plot_binning", 1.0))
+            plot_projection = getattr(self.config, "plot_projection", "fast")
+
+            if export_frames is not None:
+                export_frames = set(int(f) for f in export_frames)
+
+            pixel_assets = self.assets.pixel_data
+            if pixel_assets is None:
+                roi_mask = getattr(self.assets, "roi_mask", None)
+                if roi_mask is not None and roi_mask.shape != self.ref_image.shape:
+                    roi_mask = None
+                pixel_assets = build_pixel_assets(
+                    mesh=self.assets.mesh,
+                    ref_image=self.ref_image,
+                    binning=plot_binning,
+                    roi_mask=roi_mask,
+                )
+
+        per_frame: list[DICResult] = []
+        n_processed = 0
+        u_prev = None
+        u_prevprev = None
+        frame_times = getattr(self.config, "frame_times", None)
+        start_index = 0
+        if self.result_store is not None and self.result_fingerprint is not None:
+            checkpoint = self.result_store.load_checkpoint(self.result_fingerprint)
+            if checkpoint is not None and int(checkpoint["completed_frames"]) == self.frame_offset:
+                start_index = self.frame_offset
+                if start_index > 0:
+                    u_prev = jnp.asarray(checkpoint["u_prev"]) if "u_prev" in checkpoint else None
+                    u_prevprev = jnp.asarray(checkpoint["u_prevprev"]) if "u_prevprev" in checkpoint else None
+                    if verbose or progress:
+                        print(f"[Batch] Resuming after {start_index} completed frame(s).")
+                    if export_vtu:
+                        for frame_index in range(start_index):
+                            time_value = float(frame_index) if frame_times is None else float(frame_times[frame_index])
+                            old_vtu = vtu_dir / f"{file_prefix}_{frame_index:04d}.vtu"
+                            if old_vtu.exists():
+                                vtu_datasets.append((time_value, old_vtu))
+                            old_image = vtu_dir / f"{file_prefix}_image_{frame_index:04d}.vti"
+                            if export_vtk_images and old_image.exists():
+                                image_datasets.append((time_value, old_image))
+
+        n_frames: int | None
+        try:
+            n_frames = len(images) + self.frame_offset  # type: ignore[arg-type]
+        except TypeError:
+            n_frames = len(frame_times) if frame_times is not None else None
+        if frame_times is not None and n_frames is not None and len(frame_times) != n_frames:
+            raise ValueError("BatchConfig.frame_times must contain one time per deformed image.")
+
+        for k, Idef in enumerate(images, start=self.frame_offset):
+            n_processed += 1
+            if progress or verbose:
+                if n_frames is None:
+                    print(f"[Batch] Frame {k + 1}: start")
+                else:
+                    print(f"[Batch] Frame {k + 1}/{n_frames}: start")
+            t_frame = time.perf_counter() if verbose else None
+            if self.propagator is not None:
+                u_warm = self.propagator.propagate(u_prev=u_prev, u_prevprev=u_prevprev)
+                if verbose:
+                    print(f"  init: propagator={self.propagator.__class__.__name__}")
+            else:
+                u_warm = u_prev if self.config.warm_start_from_previous else None
+                if verbose:
+                    if u_warm is None:
+                        print("  init: none")
+                    else:
+                        print("  init: warm-start from previous frame")
+
+            if u_warm is not None:
+                # Copy to avoid donated buffers invalidating warm-start history.
+                self.dic_mesh.set_initial_guess(jnp.copy(jnp.asarray(u_warm)))
+
+            cg_res = self.dic_mesh.run(Idef)
+            if verbose:
+                _print_history(cg_res.history, label="CG")
+            res = cg_res
+            if self.dic_local is not None:
+                # Local refinement directly chained after CG for each frame.
+                # Copy to keep CG output valid after donated local solve.
+                self.dic_local.set_initial_guess(jnp.copy(jnp.asarray(cg_res.u_nodal)))
+                res = self.dic_local.run(Idef)
+                if verbose:
+                    _print_history(res.history, label="Local")
+            if keep_results:
+                per_frame.append(res)
+            if save_per_frame:
+                out_path = per_frame_dir / f"{file_prefix}_{k:04d}.npz"
+                payload = {
+                    "u_nodal": np.asarray(res.u_nodal),
+                    "strain": np.asarray(res.strain),
+                }
+                pixel_maps = getattr(res, "pixel_maps", None)
+                if isinstance(pixel_maps, dict):
+                    disc = pixel_maps.get("discrepancy_ref")
+                    if disc is not None:
+                        payload["discrepancy_ref"] = np.asarray(disc)
+                np.savez_compressed(out_path, **payload)
+                if verbose:
+                    print(f"  save: {out_path}")
+
+            if export_vtu:
+                from ..io.paraview import write_dic_vtu
+
+                vtu_path = vtu_dir / f"{file_prefix}_{k:04d}.vtu"
+                write_dic_vtu(vtu_path, self.assets.mesh, res)
+                time_value = float(k) if frame_times is None else float(frame_times[k])
+                vtu_datasets = [(t, p) for t, p in vtu_datasets if p != vtu_path]
+                vtu_datasets.append((time_value, vtu_path))
+                if export_vtk_images:
+                    from ..io.paraview import write_image_vti
+
+                    image_path = vtu_dir / f"{file_prefix}_image_{k:04d}.vti"
+                    write_image_vti(image_path, np.asarray(Idef), field_name="Gray_level")
+                    image_datasets = [(t, p) for t, p in image_datasets if p != image_path]
+                    image_datasets.append((time_value, image_path))
+                if verbose:
+                    print(f"  save: {vtu_path}")
+
+            # Update warm-start history for next frame.
+            # Keep JAX arrays on-device; only transfer to host for I/O.
+            u_prevprev = u_prev
+            u_prev = res.u_nodal
+            if progress or verbose:
+                if n_frames is None:
+                    print(f"[Batch] Frame {k + 1}: done")
+                else:
+                    print(f"[Batch] Frame {k + 1}/{n_frames}: done")
+            if t_frame is not None:
+                print(f"[Batch] Frame {k + 1}: time {time.perf_counter() - t_frame:.2f}s")
+
+            if export_png:
+                should_export = export_frames is None or k in export_frames
+                if should_export:
+                    prefix = png_dir / f"{file_prefix}_{k:04d}"
+                    # One plotter + one figure reused across fields.
+                    plotter = DICPlotter(
+                        result=res,
+                        mesh=self.assets.mesh,
+                        def_image=np.asarray(Idef),
+                        ref_image=np.asarray(self.ref_image),
+                        binning=plot_binning,
+                        pixel_assets=pixel_assets,
+                        project_on_deformed=plot_projection,
+                    )
+                    fig = None
+                    for field in plot_fields:
+                        fig, ax = plotter.plot(
+                            field=field,
+                            image_alpha=plot_alpha,
+                            cmap=plot_cmap,
+                            plotmesh=plot_mesh,
+                        )
+                        label = _plot_label(field)
+                        ax.set_title(f"{label} (frame {k})")
+                        fig.savefig(prefix.with_name(f"{prefix.name}_{label}.png"), dpi=plot_dpi)
+                    if fig is not None:
+                        plt.close(fig)
+
+            if self.result_store is not None:
+                pixel_maps = getattr(res, "pixel_maps", None)
+                discrepancy = pixel_maps.get("discrepancy_ref") if isinstance(pixel_maps, dict) else None
+                self.result_store.write_frame(
+                    k, u_nodal=np.asarray(res.u_nodal), strain=np.asarray(res.strain),
+                    discrepancy_ref=None if discrepancy is None else np.asarray(discrepancy),
+                )
+                self.result_store.save_checkpoint(
+                    fingerprint=self.result_fingerprint or "",
+                    u_prev=np.asarray(u_prev),
+                    u_prevprev=None if u_prevprev is None else np.asarray(u_prevprev),
+                    completed_frames=k + 1,
+                )
+                self.result_store.update_progress(status="running", total_frames=n_frames,
+                                                  completed_frames=k + 1, last_frame=k)
+
+        pvd_path = None
+        if export_vtu:
+            from ..io.paraview import write_pvd
+
+            pvd_path = vtu_dir / str(getattr(self.config, "pvd_filename", "dic_sequence.pvd"))
+            write_pvd(pvd_path, vtu_datasets)
+            if verbose:
+                print(f"  save: {pvd_path}")
+            if image_datasets:
+                image_pvd_path = vtu_dir / str(
+                    getattr(self.config, "image_pvd_filename", "image_sequence.pvd")
+                )
+                write_pvd(image_pvd_path, image_datasets)
+                if verbose:
+                    print(f"  save: {image_pvd_path}")
+
+        diag = BatchDiagnostics(
+            info={
+                "stage": "batch_mesh_based",
+                "n_frames": int(n_processed),
+                "warm_start_from_previous": self.config.warm_start_from_previous,
+                "keep_results": keep_results,
+                "save_per_frame": save_per_frame,
+                "export_vtu": export_vtu,
+                "pvd_path": None if pvd_path is None else str(pvd_path),
+            }
+        )
+        if self.result_store is not None:
+            total_done = n_processed + start_index
+            self.result_store.update_progress(status="finalizing", total_frames=n_frames,
+                                              completed_frames=total_done,
+                                              last_frame=total_done - 1 if total_done else None)
+        return BatchResult(results=per_frame, diagnostics=diag)
+
+    def end(self, result: BatchResult) -> BatchResult:
+        # Placeholder for post-processing (e.g. stacking, saving, summary stats).
+        # Keep as identity; update diagnostics as needed.
+        updated = BatchDiagnostics(info={**result.diagnostics.info, "post": "end() placeholder"})
+        return BatchResult(results=result.results, diagnostics=updated)
+
+
+def _plot_label(field: str) -> str:
+    key = field.strip().lower().replace("_", "")
+    mapping = {
+        "u1": "U1",
+        "u2": "U2",
+        "e11": "E11",
+        "e22": "E22",
+        "e12": "E12",
+        "discrepancy": "Discrepancy",
+    }
+    return mapping.get(key, field)
+
+
+def _print_history(history, *, label: str) -> None:
+    if label.strip().upper() == "CG":
+        return
+    if history is None:
+        print(f"  {label}: history disabled")
+        return
+    arr = np.asarray(history)
+    if arr.ndim != 2 or arr.shape[0] == 0:
+        print(f"  {label}: empty history")
+        return
+    if arr.shape[1] == 3:
+        # CG: [J, ||grad||, alpha]
+        valid = np.isfinite(arr[:, 0])
+        arr = arr[valid]
+        print(f"  {label}: {arr.shape[0]} iters")
+        for i, (J, g, a) in enumerate(arr):
+            print(f"    - iter {i:02d}: J={J:.3e}, |grad|={g:.3e}, alpha={a:.3e}")
+        return
+    if arr.shape[1] == 2:
+        # Local: [r_rms, step_rms]
+        valid = np.isfinite(arr[:, 0])
+        arr = arr[valid]
+        print(f"  {label}: {arr.shape[0]} sweeps")
+        for i, (r, step) in enumerate(arr):
+            print(f"    - iter {i:02d}: r_rms={r:.3e}, step_rms={step:.3e}")
+        return
+    print(f"  {label}: history shape {arr.shape}")
