@@ -5,8 +5,8 @@ matplotlib.use("Agg")
 import numpy as np
 import matplotlib.pyplot as plt
 
-from d2ic.dataclasses import DICDiagnostics, DICResult
-from d2ic.mesh_assets import Mesh
+from d2ic.dataclasses import DICDiagnostics, DICResult, MeshDICResult
+from d2ic.mesh.assets import Mesh
 from d2ic.plotter import DICPlotter
 
 
@@ -106,3 +106,65 @@ def test_plotter_plot_makes_figure_current() -> None:
     fig, ax = plotter.plot("u1")
     assert plt.gcf() is fig
     assert ax in fig.axes
+
+
+def test_dic_result_exposes_generic_displacement_and_u_nodal_alias() -> None:
+    displacement = np.zeros((4, 2), dtype=float)
+    result = DICResult(displacement=displacement, strain=None, diagnostics=DICDiagnostics())
+
+    assert result.displacement is displacement
+    assert result.u_nodal is displacement
+
+
+def test_plotter_reads_mesh_from_mesh_dic_result() -> None:
+    nodes_xy = np.array(
+        [
+            [0.5, 0.5],
+            [5.5, 0.5],
+            [5.5, 5.5],
+            [0.5, 5.5],
+        ],
+        dtype=float,
+    )
+    elements = np.array([[0, 1, 2, 3]], dtype=int)
+    mesh = Mesh(nodes_xy=nodes_xy, elements=elements)
+
+    result = MeshDICResult(
+        displacement=np.zeros((4, 2), dtype=float),
+        strain=np.zeros((4, 3), dtype=float),
+        diagnostics=DICDiagnostics(),
+        mesh=mesh,
+    )
+
+    im = np.zeros((8, 8), dtype=float)
+    plotter = DICPlotter(result=result, def_image=im, project_on_deformed=False)
+    fig, ax = plotter.plot("u1")
+    assert fig is not None
+    assert ax.get_title() == "$U_1$"
+
+
+def test_image_and_field_overlays_preserve_top_row(tmp_path, monkeypatch):
+    """Both plot APIs and the saved mesh overlay match the source TIFF axes."""
+    from d2ic.pipelines.sequence_platehole import _save_mesh_overlay_png
+    from matplotlib.figure import Figure
+
+    mesh = Mesh(nodes_xy=np.array([[0., 0.], [3., 0.], [3., 7.], [0., 7.]]),
+                elements=np.array([[0, 1, 2, 3]]))
+    result = DICResult(u_nodal=np.zeros((4, 2)), strain=np.zeros((4, 3)),
+                       diagnostics=DICDiagnostics())
+    image = np.arange(32.).reshape(8, 4)
+    plotter = DICPlotter(result=result, mesh=mesh, def_image=image, project_on_deformed=False)
+    fig, ax = plotter.plot("u2")
+    fig2, ax2 = plt.subplots()
+    plotter.plot_into(ax2, "u2")
+    for axis in (ax, ax2):
+        assert axis.yaxis_inverted()
+        assert all(artist.origin == "upper" for artist in axis.images)
+        np.testing.assert_array_equal(axis.images[0].get_array(), image)
+    saved = []
+    monkeypatch.setattr(Figure, "savefig", lambda self, *a, **kw: saved.append(self))
+    _save_mesh_overlay_png(tmp_path / "mesh.png", image, mesh)
+    assert saved[0].axes[0].yaxis_inverted()
+    np.testing.assert_array_equal(saved[0].axes[0].images[0].get_array(), image)
+    plt.close(fig)
+    plt.close(fig2)

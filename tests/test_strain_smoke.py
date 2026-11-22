@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 import jax.numpy as jnp
 
-from d2ic.mesh_assets import Mesh, build_node_neighbor_tables
-from d2ic.strain import compute_green_lagrange_strain_nodes_lsq, green_lagrange_to_voigt
+from d2ic.mesh.assets import Mesh, build_node_neighbor_tables
+from d2ic.physics.strain import compute_green_lagrange_strain_nodes_lsq, green_lagrange_to_voigt
 
 
 def test_green_lagrange_strain_uniform_extension() -> None:

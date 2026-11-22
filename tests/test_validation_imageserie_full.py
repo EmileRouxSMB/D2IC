@@ -8,12 +8,12 @@ import pytest
 import matplotlib
 import matplotlib.pyplot as plt
 
-from d2ic.pixel_assets import build_pixel_assets
-from d2ic.mask2mesh import mask_to_mesh_assets
+from d2ic.mesh.pixel_sampling import build_pixel_assets
+from d2ic.mesh.generation import mask_to_mesh_assets
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = PROJECT_ROOT / "doc" / "00_Validation_ImageSerie.py"
+SCRIPT_PATH = PROJECT_ROOT / "examples" / "validation_sample3_translation.py"
 DATA_DIR = PROJECT_ROOT / "doc" / "img" / "Sample3"
 OUT_DIR = PROJECT_ROOT / "tests" / "_outputs"
 
@@ -23,7 +23,7 @@ matplotlib.use("Agg")
 def _load_validation_module():
     spec = importlib.util.spec_from_file_location("validation_imageserie", SCRIPT_PATH)
     if spec is None or spec.loader is None:
-        raise RuntimeError("Unable to load 00_Validation_ImageSerie module")
+        raise RuntimeError("Unable to load validation_sample3_translation module")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

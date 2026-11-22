@@ -1,0 +1,15 @@
+{
+  "wall_seconds_including_preparation_compilation_exports": 45.058309355001256,
+  "output": "/tmp/alternating_optimized_validation",
+  "parameters": [
+    484.3538819064886,
+    1042.8382913992536,
+    0.24398717739362627
+  ],
+  "initial_objective": 0.0033813276897218794,
+  "final_objective": 0.003370429347656066,
+  "converged": false,
+  "outer_iterations": 3,
+  "accepted_steps": 57,
+  "material_status": "`ftol` termination condition is satisfied."
+}

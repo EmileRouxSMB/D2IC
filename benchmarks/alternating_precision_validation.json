@@ -1,0 +1,10 @@
+{
+  "float64_wall_seconds_including_compilation": 48.29077320000215,
+  "max_displacement_difference_pixels": 2.993501171770496e-13,
+  "max_relative_parameter_difference": 2.944311461305915e-11,
+  "max_stress_difference_MPa": 1.765556589816697e-08,
+  "mixed_objective": 0.003370429347656066,
+  "float64_objective": 0.0033704289971026686,
+  "all_constitutive_converged": true,
+  "float64_scope": "image reading, binning, normalization, interpolation, reductions and mechanics"
+}

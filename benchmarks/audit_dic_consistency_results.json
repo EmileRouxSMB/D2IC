@@ -1,0 +1,30 @@
+{
+  "bilinear_internal": 5.0,
+  "bilinear_dm_pix_current_call": 7.5,
+  "bilinear_dm_pix_shifted_call": 5.0,
+  "cost_before_pixel_exit": 1.5625,
+  "cost_after_bad_pixel_exit": 0.0,
+  "local_valid_pixels_outside": 0,
+  "local_reported_rms_outside": 0.0,
+  "global_regularization_gradient": [
+    [
+      -2.0,
+      0.0
+    ],
+    [
+      2.0,
+      0.0
+    ]
+  ],
+  "local_regularization_gradient": [
+    [
+      -1.0,
+      0.0
+    ],
+    [
+      3.0,
+      0.0
+    ]
+  ],
+  "cg_output_finite_on_nonfinite_image": false
+}

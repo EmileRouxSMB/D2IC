@@ -1,0 +1,286 @@
+{
+  "general_hill48": {
+    "compile_seconds": 1.9508987009976408,
+    "median_seconds": 11.212238736006839,
+    "min_seconds": 11.19259008300287,
+    "samples_seconds": [
+      11.19259008300287,
+      11.212238736006839,
+      11.236490457995387
+    ],
+    "compiled_memory_bytes": {
+      "argument_size_in_bytes": 3758104,
+      "output_size_in_bytes": 3570193,
+      "temp_size_in_bytes": 27831632,
+      "alias_size_in_bytes": 0
+    }
+  },
+  "isotropic_implicit": {
+    "compile_seconds": 0.9407390139967902,
+    "median_seconds": 0.08366290100093465,
+    "min_seconds": 0.08330677400226705,
+    "samples_seconds": [
+      0.0850667019985849,
+      0.08366290100093465,
+      0.08330677400226705
+    ],
+    "compiled_memory_bytes": {
+      "argument_size_in_bytes": 3758104,
+      "output_size_in_bytes": 3570193,
+      "temp_size_in_bytes": 25621328,
+      "alias_size_in_bytes": 0
+    }
+  },
+  "prepared_kinematics": {
+    "compile_seconds": 0.44435270100075286,
+    "median_seconds": 0.05742428699886659,
+    "min_seconds": 0.057109563997073565,
+    "samples_seconds": [
+      0.05742428699886659,
+      0.05760770099732326,
+      0.057109563997073565
+    ],
+    "compiled_memory_bytes": {
+      "argument_size_in_bytes": 12495640,
+      "output_size_in_bytes": 3570193,
+      "temp_size_in_bytes": 5108304,
+      "alias_size_in_bytes": 0
+    }
+  },
+  "stress_max_abs_error_MPa": 4.42939516176466e-08,
+  "material_speedup": 134.0168533706664,
+  "preparation_reuse_speedup": 1.4569253772813224,
+  "implicit_full_gradient": {
+    "compile_seconds": 6.97398669100221,
+    "median_seconds": 0.17638414700195426,
+    "min_seconds": 0.17525474799913354,
+    "samples_seconds": [
+      0.17708474500250304,
+      0.17525474799913354,
+      0.17638414700195426
+    ],
+    "compiled_memory_bytes": {
+      "argument_size_in_bytes": 168,
+      "output_size_in_bytes": 168,
+      "temp_size_in_bytes": 326332832,
+      "alias_size_in_bytes": 0
+    }
+  },
+  "implicit_suffix_gradient": {
+    "compile_seconds": 3.216875379002886,
+    "median_seconds": 0.1513879830017686,
+    "min_seconds": 0.14822798700333806,
+    "samples_seconds": [
+      0.1572970740016899,
+      0.1513879830017686,
+      0.14822798700333806
+    ],
+    "compiled_memory_bytes": {
+      "argument_size_in_bytes": 168,
+      "output_size_in_bytes": 168,
+      "temp_size_in_bytes": 326426528,
+      "alias_size_in_bytes": 0
+    }
+  },
+  "suffix_gradient_max_error": 3.469446951953614e-18,
+  "suffix_speedup": 1.165113263976135,
+  "finite_difference_gradient": {
+    "compile_seconds": 3.40674808100448,
+    "median_seconds": 2.695002831002057,
+    "min_seconds": 2.6751933239938808,
+    "samples_seconds": [
+      2.7179278309995425,
+      2.695002831002057,
+      2.6751933239938808
+    ],
+    "compiled_memory_bytes": {
+      "argument_size_in_bytes": 24,
+      "output_size_in_bytes": 144,
+      "temp_size_in_bytes": 112911440,
+      "alias_size_in_bytes": 0
+    }
+  },
+  "gradient_relative_error": 0.00012975402365426002,
+  "implicit_derivative_speedup": 15.279166959217699,
+  "material_parameter_fd": {
+    "compile_seconds": 1.2316385820013238,
+    "median_seconds": 0.23455443599959835,
+    "min_seconds": 0.23361657100031152,
+    "samples_seconds": [
+      0.23361657100031152,
+      0.2349747659973218,
+      0.23455443599959835
+    ],
+    "compiled_memory_bytes": {
+      "argument_size_in_bytes": 24,
+      "output_size_in_bytes": 10710528,
+      "temp_size_in_bytes": 21429840,
+      "alias_size_in_bytes": 0
+    }
+  },
+  "material_parameter_jvp": {
+    "compile_seconds": 1.261016128002666,
+    "median_seconds": 0.05723048600339098,
+    "min_seconds": 0.05688226199708879,
+    "samples_seconds": [
+      0.05743120000261115,
+      0.05688226199708879,
+      0.05723048600339098
+    ],
+    "compiled_memory_bytes": {
+      "argument_size_in_bytes": 24,
+      "output_size_in_bytes": 10710528,
+      "temp_size_in_bytes": 14146640,
+      "alias_size_in_bytes": 0
+    }
+  },
+  "material_parameter_relative_error": 2.477141677068631e-10,
+  "batches": {
+    "1": {
+      "compile_seconds": 1.4495841159950942,
+      "median_seconds": 0.08367002999875695,
+      "min_seconds": 0.08329960500122979,
+      "samples_seconds": [
+        0.08367002999875695,
+        0.08329960500122979,
+        0.08567216499795904
+      ],
+      "compiled_memory_bytes": {
+        "argument_size_in_bytes": 3758104,
+        "output_size_in_bytes": 3570193,
+        "temp_size_in_bytes": 25621328,
+        "alias_size_in_bytes": 0
+      },
+      "seconds_per_history": 0.08367002999875695
+    },
+    "2": {
+      "compile_seconds": 1.12142975799361,
+      "median_seconds": 0.16517331399518298,
+      "min_seconds": 0.14959506599552697,
+      "samples_seconds": [
+        0.16517331399518298,
+        0.18560748900199542,
+        0.14959506599552697
+      ],
+      "compiled_memory_bytes": {
+        "argument_size_in_bytes": 7516184,
+        "output_size_in_bytes": 7140370,
+        "temp_size_in_bytes": 42848080,
+        "alias_size_in_bytes": 0
+      },
+      "seconds_per_history": 0.08258665699759149
+    },
+    "4": {
+      "compile_seconds": 5.347226753998257,
+      "median_seconds": 0.2638340910052648,
+      "min_seconds": 0.26149698499648366,
+      "samples_seconds": [
+        0.2638340910052648,
+        0.264972843004216,
+        0.26149698499648366
+      ],
+      "compiled_memory_bytes": {
+        "argument_size_in_bytes": 15032344,
+        "output_size_in_bytes": 14280724,
+        "temp_size_in_bytes": 85690704,
+        "alias_size_in_bytes": 0
+      },
+      "seconds_per_history": 0.0659585227513162
+    },
+    "8": {
+      "compile_seconds": 9.584475623996696,
+      "median_seconds": 0.4938102969972533,
+      "min_seconds": 0.49264401600521524,
+      "samples_seconds": [
+        0.4938102969972533,
+        0.49264401600521524,
+        0.49432689599780133
+      ],
+      "compiled_memory_bytes": {
+        "argument_size_in_bytes": 30064664,
+        "output_size_in_bytes": 28561432,
+        "temp_size_in_bytes": 171374928,
+        "alias_size_in_bytes": 0
+      },
+      "seconds_per_history": 0.061726287124656665
+    }
+  },
+  "photo_float64": {
+    "compile_seconds": 0.25505446400347864,
+    "median_seconds": 0.0014249930027290247,
+    "min_seconds": 0.0012884840034530498,
+    "samples_seconds": [
+      0.0015150990002439357,
+      0.0012884840034530498,
+      0.0014249930027290247
+    ],
+    "compiled_memory_bytes": {
+      "argument_size_in_bytes": 18432016,
+      "output_size_in_bytes": 40,
+      "temp_size_in_bytes": 4228904,
+      "alias_size_in_bytes": 0
+    }
+  },
+  "photo_mixed": {
+    "compile_seconds": 0.20229681699856883,
+    "median_seconds": 0.0013875910008209758,
+    "min_seconds": 0.0013632889967993833,
+    "samples_seconds": [
+      0.0013875910008209758,
+      0.0014079920001677237,
+      0.0013632889967993833
+    ],
+    "compiled_memory_bytes": {
+      "argument_size_in_bytes": 9216016,
+      "output_size_in_bytes": 40,
+      "temp_size_in_bytes": 2408480,
+      "alias_size_in_bytes": 0
+    }
+  },
+  "photo_host_input": {
+    "compile_seconds": 0.18415703199570999,
+    "median_seconds": 0.0019630280003184453,
+    "min_seconds": 0.0019243260030634701,
+    "samples_seconds": [
+      0.002007032002438791,
+      0.0019630280003184453,
+      0.0019243260030634701
+    ],
+    "compiled_memory_bytes": {
+      "argument_size_in_bytes": 9216016,
+      "output_size_in_bytes": 40,
+      "temp_size_in_bytes": 2408480,
+      "alias_size_in_bytes": 0
+    }
+  },
+  "photo_residency_speedup": 1.4147021702771272,
+  "photo_cost_abs_error": 1.7325203771623165e-10,
+  "photo_gradient_relative_error": 1.9306821593359458e-07,
+  "photo_speedup": 1.0269546299204304,
+  "environment": {
+    "jax": "0.10.2",
+    "jaxlib": "0.10.2",
+    "python": "3.12.12",
+    "devices": [
+      "cuda:0"
+    ],
+    "device_kind": "NVIDIA RTX 2000 Ada Generation Laptop GPU",
+    "platform": "gpu",
+    "x64": true
+  },
+  "case": {
+    "frames": 19,
+    "elements": 1468,
+    "gauss_points": 4,
+    "substeps": 2,
+    "modes": 18,
+    "suffix_first_frame": 10,
+    "repeats": 3,
+    "baseline": "general Hill48 on identical objective substep path",
+    "timing": "separate compilation, warmup, synchronized median",
+    "memory": "XLA compiled buffer estimates; not whole-process peak VRAM",
+    "gradient_objective": "0.5 * mean((nodal_force / 100 N)**2), 18 affine/Gaussian modes",
+    "parameter_jacobian": "all Cauchy stress components versus 3 material parameters",
+    "photo_case": "65000 fixed random samples, reproducible random 1920x1200 image"
+  }
+}
